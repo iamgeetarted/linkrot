@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "linkrot"
+version = "1.0.0"
+description = "Find broken links in Markdown and HTML files"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "iamgeetarted", email = "marktimothydorsey@gmail.com"}]
+keywords = ["links", "markdown", "html", "broken", "deadlink", "linkchecker"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Utilities",
+    "Environment :: Console",
+]
+
+[project.scripts]
+linkrot = "linkrot.cli:entry_point"
+
+[project.urls]
+Homepage = "https://github.com/iamgeetarted/linkrot"
