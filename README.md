@@ -9,6 +9,79 @@
 
 ---
 
+## What's New in v1.2.0
+
+### 1. Rich terminal UI
+
+When [`rich`](https://github.com/Textualize/rich) is installed, linkrot automatically uses a live progress bar with a spinner and completion counter during scanning and checking, and renders results in a polished ROUNDED-box table with cyan headers and colour-coded status cells.
+
+```bash
+pip install "linkrot[rich]"   # or: pip install linkrot rich
+linkrot .
+```
+
+No code changes required — the UI upgrades automatically when `rich` is available and stdout is a TTY. Falls back to the plain ANSI output when running in CI or piped output.
+
+### 2. `--format markdown` output
+
+Generate a self-contained Markdown report with per-file headings, status icons (✅ / ❌ / ⚠️), and a summary table — perfect for saving alongside your docs or posting in a GitHub issue.
+
+```bash
+linkrot . --format markdown
+linkrot . --format markdown -o link-report.md
+```
+
+Example output:
+
+```markdown
+# Link Check Report
+
+## Summary
+
+| Metric | Count |
+|--------|-------|
+| Total links | 42 |
+| Passing | 39 |
+| Broken | 3 |
+
+## Results by File
+
+### `docs/api.md`
+
+| Line | Status | URL | Detail |
+|------|--------|-----|--------|
+| 12 | ❌ `missing` | `./endpoints/users.md` | File not found: endpoints/users.md |
+```
+
+### 3. Config file support (`~/.linkrot.toml`)
+
+Place a `.linkrot.toml` in your project directory or home directory to set persistent defaults. CLI flags always override config values.
+
+```toml
+# ~/.linkrot.toml  or  ./.linkrot.toml
+timeout    = 15
+workers    = 10
+format     = "table"
+show_ok    = false
+no_external = false
+ignore     = ["localhost", "127\\.0\\.0\\.1", "example\\.com"]
+```
+
+Supported keys:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `timeout` | float | HTTP request timeout in seconds |
+| `workers` | int | Max concurrent HTTP workers |
+| `format` | string | Default output format (`table`, `json`, `csv`, `markdown`) |
+| `show_ok` | bool | Show passing links in table output |
+| `no_external` | bool | Skip external URL checks |
+| `ignore` | list of strings | Regex patterns — matching URLs are skipped |
+
+Local `.linkrot.toml` takes precedence over `~/.linkrot.toml`.
+
+---
+
 ## Install
 
 ```bash

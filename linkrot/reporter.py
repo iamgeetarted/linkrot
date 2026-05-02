@@ -8,6 +8,15 @@ from pathlib import Path
 
 from .checker import CheckResult
 
+try:
+    from rich.console import Console
+    from rich.table import Table
+    from rich.text import Text
+    from rich import box as rich_box
+    _RICH = True
+except ImportError:
+    _RICH = False
+
 # ANSI color codes
 _GREEN = "\033[32m"
 _RED = "\033[31m"
@@ -38,6 +47,90 @@ def _colorize(text: str, color: str, use_color: bool) -> str:
     return f"{color}{text}{_RESET}" if use_color else text
 
 
+def _url_display(cr: CheckResult) -> str:
+    url = cr.link.url
+    if cr.link.anchor:
+        url += f"#{cr.link.anchor}"
+    return url
+
+
+def _status_style(status: str) -> str:
+    if status == "ok":
+        return "bold green"
+    if status in ("missing", "error"):
+        return "bold red"
+    if status in ("anchor-missing", "timeout"):
+        return "bold yellow"
+    if status.startswith("http-"):
+        code = int(status[5:])
+        return "bold yellow" if code < 500 else "bold red"
+    return "bold red"
+
+
+def _rich_icon(status: str) -> str:
+    if status == "ok":
+        return "✓"
+    if status == "timeout":
+        return "⏱"
+    if status == "anchor-missing":
+        return "⚠"
+    return "✗"
+
+
+def report_rich_table(
+    results: list[CheckResult],
+    root: Path,
+    show_ok: bool = False,
+    output_file: str | None = None,
+) -> None:
+    broken = [r for r in results if not r.ok]
+    ok_count = sum(1 for r in results if r.ok)
+    total = len(results)
+
+    console = Console(highlight=False)
+
+    if not broken and not show_ok:
+        console.print(f"[bold green]All {ok_count} links OK.[/bold green]")
+        return
+
+    display = results if show_ok else broken
+
+    table = Table(
+        box=rich_box.ROUNDED,
+        show_header=True,
+        header_style="bold cyan",
+        border_style="cyan",
+        show_lines=False,
+        expand=False,
+    )
+    table.add_column("File", style="cyan", no_wrap=True)
+    table.add_column("Line", style="dim", justify="right", width=6)
+    table.add_column("", width=2, no_wrap=True)
+    table.add_column("URL", no_wrap=False)
+    table.add_column("Detail", style="dim", no_wrap=False)
+
+    for cr in sorted(display, key=lambda r: (str(r.link.source_file), r.link.line_number)):
+        rel = (
+            str(cr.link.source_file.relative_to(root))
+            if cr.link.source_file.is_relative_to(root)
+            else str(cr.link.source_file)
+        )
+        style = _status_style(cr.status)
+        icon_text = Text(_rich_icon(cr.status), style=style)
+        url_text = Text(_url_display(cr), style=style if not cr.ok else "")
+        table.add_row(rel, str(cr.link.line_number), icon_text, url_text, cr.detail or "")
+
+    console.print(table)
+
+    broken_style = "red" if broken else "green"
+    summary = (
+        f"[bold green]{ok_count} OK[/bold green]  "
+        f"[bold {broken_style}]{len(broken)} broken[/bold {broken_style}]  "
+        f"of {total} total"
+    )
+    console.print(summary)
+
+
 def report_table(
     results: list[CheckResult],
     root: Path,
@@ -52,26 +145,24 @@ def report_table(
         msg = f"All {ok_count} links OK."
         return _colorize(msg, _GREEN, use_color)
 
-    if show_ok:
-        display = results
-    else:
-        display = broken
+    display = results if show_ok else broken
 
     prev_file = None
     for cr in sorted(display, key=lambda r: (str(r.link.source_file), r.link.line_number)):
-        rel = cr.link.source_file.relative_to(root) if cr.link.source_file.is_relative_to(root) else cr.link.source_file
+        rel = (
+            cr.link.source_file.relative_to(root)
+            if cr.link.source_file.is_relative_to(root)
+            else cr.link.source_file
+        )
         if rel != prev_file:
             lines.append(f"\n{_colorize(str(rel), _BOLD + _CYAN, use_color)}")
             prev_file = rel
 
         icon = _icon(cr.status) if use_color else ("OK" if cr.ok else "FAIL")
-        url_display = cr.link.url
-        if cr.link.anchor:
-            url_display += f"#{cr.link.anchor}"
+        url = _url_display(cr)
         detail = f"  {_colorize(cr.detail, _DIM, use_color)}" if cr.detail else ""
-        lines.append(f"  {icon}  L{cr.link.line_number:<5} {url_display}{detail}")
+        lines.append(f"  {icon}  L{cr.link.line_number:<5} {url}{detail}")
 
-    # Summary
     total = len(results)
     lines.append("")
     summary_parts = [
@@ -87,14 +178,15 @@ def report_table(
 def report_json(results: list[CheckResult], root: Path) -> str:
     data = []
     for cr in results:
-        rel = str(cr.link.source_file.relative_to(root)) if cr.link.source_file.is_relative_to(root) else str(cr.link.source_file)
-        url = cr.link.url
-        if cr.link.anchor:
-            url += f"#{cr.link.anchor}"
+        rel = (
+            str(cr.link.source_file.relative_to(root))
+            if cr.link.source_file.is_relative_to(root)
+            else str(cr.link.source_file)
+        )
         data.append({
             "file": rel,
             "line": cr.link.line_number,
-            "url": url,
+            "url": _url_display(cr),
             "ok": cr.ok,
             "status": cr.status,
             "detail": cr.detail,
@@ -107,12 +199,77 @@ def report_csv(results: list[CheckResult], root: Path) -> str:
     writer = csv.writer(buf)
     writer.writerow(["file", "line", "url", "ok", "status", "detail"])
     for cr in results:
-        rel = str(cr.link.source_file.relative_to(root)) if cr.link.source_file.is_relative_to(root) else str(cr.link.source_file)
-        url = cr.link.url
-        if cr.link.anchor:
-            url += f"#{cr.link.anchor}"
-        writer.writerow([rel, cr.link.line_number, url, cr.ok, cr.status, cr.detail])
+        rel = (
+            str(cr.link.source_file.relative_to(root))
+            if cr.link.source_file.is_relative_to(root)
+            else str(cr.link.source_file)
+        )
+        writer.writerow([rel, cr.link.line_number, _url_display(cr), cr.ok, cr.status, cr.detail])
     return buf.getvalue()
+
+
+def _md_status_icon(status: str) -> str:
+    if status == "ok":
+        return "✅"
+    if status == "anchor-missing":
+        return "⚠️"
+    return "❌"
+
+
+def report_markdown(
+    results: list[CheckResult],
+    root: Path,
+    show_ok: bool = False,
+) -> str:
+    broken = [r for r in results if not r.ok]
+    ok_count = sum(1 for r in results if r.ok)
+    total = len(results)
+
+    lines: list[str] = ["# Link Check Report", ""]
+
+    lines += [
+        "## Summary",
+        "",
+        "| Metric | Count |",
+        "|--------|-------|",
+        f"| Total links | {total} |",
+        f"| Passing | {ok_count} |",
+        f"| Broken | {len(broken)} |",
+        "",
+    ]
+
+    if not broken and not show_ok:
+        lines.append(f"All {ok_count} links are OK.")
+        return "\n".join(lines)
+
+    display = results if show_ok else broken
+    sorted_results = sorted(display, key=lambda r: (str(r.link.source_file), r.link.line_number))
+
+    by_file: dict[str, list[CheckResult]] = {}
+    for cr in sorted_results:
+        rel = (
+            str(cr.link.source_file.relative_to(root))
+            if cr.link.source_file.is_relative_to(root)
+            else str(cr.link.source_file)
+        )
+        by_file.setdefault(rel, []).append(cr)
+
+    lines += ["## Results by File", ""]
+
+    for file_path, file_results in by_file.items():
+        lines += [f"### `{file_path}`", ""]
+        lines += [
+            "| Line | Status | URL | Detail |",
+            "|------|--------|-----|--------|",
+        ]
+        for cr in file_results:
+            icon = _md_status_icon(cr.status)
+            url = _url_display(cr).replace("|", "\\|")
+            detail = (cr.detail or "").replace("|", "\\|")
+            lines.append(f"| {cr.link.line_number} | {icon} `{cr.status}` | `{url}` | {detail} |")
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 def write_report(
@@ -126,15 +283,30 @@ def write_report(
 
     if fmt == "json":
         text = report_json(results, root)
+        if output_file:
+            Path(output_file).write_text(text, encoding="utf-8")
+        else:
+            print(text)
     elif fmt == "csv":
         text = report_csv(results, root)
+        if output_file:
+            Path(output_file).write_text(text, encoding="utf-8")
+        else:
+            print(text)
+    elif fmt == "markdown":
+        text = report_markdown(results, root, show_ok=show_ok)
+        if output_file:
+            Path(output_file).write_text(text, encoding="utf-8")
+        else:
+            print(text)
+    elif fmt == "table" and _RICH and use_color:
+        report_rich_table(results, root, show_ok=show_ok, output_file=output_file)
     else:
         text = report_table(results, root, show_ok=show_ok, use_color=use_color)
-
-    if output_file:
-        Path(output_file).write_text(text, encoding="utf-8")
-    else:
-        print(text)
+        if output_file:
+            Path(output_file).write_text(text, encoding="utf-8")
+        else:
+            print(text)
 
     broken_count = sum(1 for r in results if not r.ok)
     return 1 if broken_count else 0
