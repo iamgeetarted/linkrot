@@ -1,13 +1,16 @@
 """Check links for validity — internal file links and external URLs."""
 
+from __future__ import annotations
+
+import asyncio
 import re
-import urllib.request
-import urllib.error
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+import httpx
+
+from .cache import CachedResult, get_cached, set_cached
 from .scanner import Link
 
 
@@ -19,6 +22,10 @@ class CheckResult:
     detail: str = ""
 
 
+# ---------------------------------------------------------------------------
+# Internal link resolution
+# ---------------------------------------------------------------------------
+
 def _resolve_internal(link: Link, root: Path) -> CheckResult:
     """Check whether an internal link target exists on disk."""
     url = link.url
@@ -29,7 +36,6 @@ def _resolve_internal(link: Link, root: Path) -> CheckResult:
     else:
         target = (source_dir / url).resolve()
 
-    # Try exact path first
     if target.exists():
         if link.anchor:
             ok, detail = _check_anchor(target, link.anchor)
@@ -38,14 +44,16 @@ def _resolve_internal(link: Link, root: Path) -> CheckResult:
             return CheckResult(link, False, "anchor-missing", detail)
         return CheckResult(link, True, "ok")
 
-    # Try with common index file suffixes
     for suffix in [".md", ".html", ".htm", ""]:
         candidate = target.with_suffix(suffix) if suffix else target / "index.html"
         if candidate.exists():
             return CheckResult(link, True, "ok")
 
     return CheckResult(
-        link, False, "missing", f"File not found: {target.relative_to(root) if target.is_relative_to(root) else target}"
+        link,
+        False,
+        "missing",
+        f"File not found: {target.relative_to(root) if target.is_relative_to(root) else target}",
     )
 
 
@@ -56,21 +64,18 @@ def _check_anchor(path: Path, anchor: str) -> tuple[bool, str]:
     except OSError:
         return False, "Could not read file"
 
-    # Convert anchor to heading text (GitHub style: lowercase, spaces→hyphens, strip punctuation)
     def heading_to_anchor(text: str) -> str:
         text = text.lower().strip()
-        text = re.sub(r'[^\w\s-]', '', text)
-        text = re.sub(r'\s+', '-', text)
+        text = re.sub(r"[^\w\s-]", "", text)
+        text = re.sub(r"\s+", "-", text)
         return text
 
     suffix = path.suffix.lower()
     if suffix in {".md", ".markdown"}:
         for line in content.splitlines():
-            m = re.match(r'^#{1,6}\s+(.*)', line)
-            if m:
-                if heading_to_anchor(m.group(1)) == anchor.lower():
-                    return True, ""
-        # Also look for explicit HTML anchors embedded in markdown
+            m = re.match(r"^#{1,6}\s+(.*)", line)
+            if m and heading_to_anchor(m.group(1)) == anchor.lower():
+                return True, ""
         if re.search(rf'id=["\']?{re.escape(anchor)}["\']?', content, re.IGNORECASE):
             return True, ""
     elif suffix in {".html", ".htm"}:
@@ -82,47 +87,84 @@ def _check_anchor(path: Path, anchor: str) -> tuple[bool, str]:
     return False, f"Anchor '#{anchor}' not found in {path.name}"
 
 
-def _check_external(link: Link, timeout: float, user_agent: str) -> CheckResult:
-    """Perform an HTTP HEAD (fallback GET) request to validate a URL."""
-    url = link.url
-    # Normalize scheme-relative URLs
+# ---------------------------------------------------------------------------
+# Async external checking with httpx
+# ---------------------------------------------------------------------------
+
+_UA = "linkrot/1.3 (https://github.com/iamgeetarted/linkrot)"
+
+
+async def _check_one_url(url: str, client: httpx.AsyncClient, timeout: float) -> tuple[bool, str, str]:
+    """Return (ok, status, detail) for a single URL."""
     if url.startswith("//"):
         url = "https:" + url
-
-    req = urllib.request.Request(url, method="HEAD")
-    req.add_header("User-Agent", user_agent)
-    req.add_header("Accept", "*/*")
-
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            code = resp.status
-            if code < 400:
-                return CheckResult(link, True, "ok", f"HTTP {code}")
-            return CheckResult(link, False, f"http-{code}", f"HTTP {code}")
-    except urllib.error.HTTPError as e:
-        if e.code == 405:
-            # HEAD not allowed — try GET
-            req2 = urllib.request.Request(url, method="GET")
-            req2.add_header("User-Agent", user_agent)
-            try:
-                with urllib.request.urlopen(req2, timeout=timeout) as resp:
-                    code = resp.status
-                    if code < 400:
-                        return CheckResult(link, True, "ok", f"HTTP {code}")
-                    return CheckResult(link, False, f"http-{code}", f"HTTP {code}")
-            except Exception as e2:
-                return CheckResult(link, False, "error", str(e2)[:120])
-        return CheckResult(link, False, f"http-{e.code}", f"HTTP {e.code}: {e.reason}")
-    except TimeoutError:
-        return CheckResult(link, False, "timeout", f"Timed out after {timeout}s")
-    except OSError as e:
-        msg = str(e)
+        resp = await client.head(url, follow_redirects=True)
+        code = resp.status_code
+        if code == 405:
+            resp = await client.get(url, follow_redirects=True)
+            code = resp.status_code
+        if code < 400:
+            return True, "ok", f"HTTP {code}"
+        return False, f"http-{code}", f"HTTP {code}"
+    except httpx.TimeoutException:
+        return False, "timeout", f"Timed out after {timeout}s"
+    except Exception as exc:
+        msg = str(exc)[:120]
         if "timed out" in msg.lower():
-            return CheckResult(link, False, "timeout", msg[:120])
-        return CheckResult(link, False, "error", msg[:120])
-    except Exception as e:
-        return CheckResult(link, False, "error", str(e)[:120])
+            return False, "timeout", msg
+        return False, "error", msg
 
+
+async def _fetch_all_external(
+    links: list[Link],
+    timeout: float,
+    max_workers: int,
+    cache_ttl: float | None,
+    progress_cb: Callable[[int, int], None] | None,
+    start_done: int,
+    total: int,
+) -> list[CheckResult]:
+    semaphore = asyncio.Semaphore(max_workers)
+    counter = [start_done]
+    lock = asyncio.Lock()
+
+    async with httpx.AsyncClient(
+        headers={"User-Agent": _UA, "Accept": "*/*"},
+        timeout=httpx.Timeout(timeout, connect=min(timeout, 10.0)),
+        follow_redirects=True,
+    ) as client:
+
+        async def _do(link: Link) -> CheckResult:
+            # Cache lookup (no semaphore needed — just a disk read)
+            if cache_ttl is not None:
+                cached: CachedResult | None = get_cached(link.url, cache_ttl)
+                if cached is not None:
+                    async with lock:
+                        counter[0] += 1
+                        if progress_cb:
+                            progress_cb(counter[0], total)
+                    return CheckResult(link, cached.ok, cached.status, cached.detail)
+
+            async with semaphore:
+                ok, status, detail = await _check_one_url(link.url, client, timeout)
+
+            if cache_ttl is not None:
+                set_cached(link.url, ok, status, detail)
+
+            async with lock:
+                counter[0] += 1
+                if progress_cb:
+                    progress_cb(counter[0], total)
+
+            return CheckResult(link, ok, status, detail)
+
+        return list(await asyncio.gather(*(_do(link) for link in links)))
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def check_links(
     links: list[Link],
@@ -132,51 +174,58 @@ def check_links(
     max_workers: int = 20,
     ignore_patterns: list[str] | None = None,
     progress_cb: Callable[[int, int], None] | None = None,
+    cache_ttl: float | None = 24.0,
+    no_cache: bool = False,
 ) -> list[CheckResult]:
-    user_agent = "linkrot/1.0 (https://github.com/iamgeetarted/linkrot)"
+    """Check all links; returns a list of CheckResult."""
     ignore_res = [re.compile(p) for p in (ignore_patterns or [])]
+    effective_ttl = None if no_cache else cache_ttl
 
     def is_ignored(url: str) -> bool:
         return any(r.search(url) for r in ignore_res)
 
-    internal = [l for l in links if not l.is_external and not is_ignored(l.url)]
-    external = [l for l in links if l.is_external and not is_ignored(l.url)] if check_external else []
+    internal = [lk for lk in links if not lk.is_external and not is_ignored(lk.url)]
+    external = (
+        [lk for lk in links if lk.is_external and not is_ignored(lk.url)]
+        if check_external
+        else []
+    )
 
     results: list[CheckResult] = []
     total = len(internal) + len(external)
     done = 0
 
-    # Internal links — fast, sequential (usually just stat calls)
-    for link in internal:
-        results.append(_resolve_internal(link, root))
+    for lk in internal:
+        results.append(_resolve_internal(lk, root))
         done += 1
         if progress_cb:
             progress_cb(done, total)
 
-    # Deduplicate external URLs (same URL may appear many times)
-    seen_external: dict[str, CheckResult] = {}
-    unique_external: list[Link] = []
-    for link in external:
-        if link.url not in seen_external:
-            unique_external.append(link)
+    # Deduplicate external URLs — same URL may appear in many files
+    seen: dict[str, CheckResult] = {}
+    unique: list[Link] = []
+    for lk in external:
+        if lk.url not in seen:
+            unique.append(lk)
 
-    if unique_external:
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {
-                pool.submit(_check_external, link, timeout, user_agent): link
-                for link in unique_external
-            }
-            for future in as_completed(futures):
-                cr = future.result()
-                seen_external[cr.link.url] = cr
-                done += 1
-                if progress_cb:
-                    progress_cb(done, total)
+    if unique:
+        ext_results = asyncio.run(
+            _fetch_all_external(
+                unique,
+                timeout=timeout,
+                max_workers=max_workers,
+                cache_ttl=effective_ttl,
+                progress_cb=progress_cb,
+                start_done=done,
+                total=total,
+            )
+        )
+        for cr in ext_results:
+            seen[cr.link.url] = cr
 
-        # Map results back to all occurrences
-        for link in external:
-            cached = seen_external.get(link.url)
-            if cached:
-                results.append(CheckResult(link, cached.ok, cached.status, cached.detail))
+        for lk in external:
+            cached_cr = seen.get(lk.url)
+            if cached_cr:
+                results.append(CheckResult(lk, cached_cr.ok, cached_cr.status, cached_cr.detail))
 
     return results

@@ -10,6 +10,7 @@ from .scanner import scan_directory
 from .checker import check_links
 from .reporter import write_report
 from .config import load_config
+from .cache import clear_cache
 
 try:
     from rich.progress import (
@@ -83,6 +84,30 @@ examples:
         default=cfg.get("show_ok", False),
         help="Also show passing links in table output",
     )
+    p.add_argument(
+        "--cache-ttl",
+        type=float,
+        default=cfg.get("cache_ttl", 24.0),
+        metavar="HOURS",
+        help="Cache external results for this many hours (default: 24). Set 0 to disable.",
+    )
+    p.add_argument(
+        "--no-cache",
+        action="store_true",
+        default=cfg.get("no_cache", False),
+        help="Bypass the on-disk URL result cache",
+    )
+    p.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help="Delete all cached URL results and exit",
+    )
+    p.add_argument(
+        "--suggest",
+        action="store_true",
+        default=cfg.get("suggest", False),
+        help="After the report, stream AI suggestions for broken external links (requires ANTHROPIC_API_KEY)",
+    )
     p.add_argument("--version", action="version", version=f"linkrot {__version__}")
     return p
 
@@ -134,15 +159,23 @@ def _run_with_rich(args: argparse.Namespace, root: Path) -> int:
             max_workers=args.workers,
             ignore_patterns=args.ignore,
             progress_cb=_cb,
+            cache_ttl=args.cache_ttl if args.cache_ttl > 0 else None,
+            no_cache=args.no_cache,
         )
 
-    return write_report(
+    exit_code = write_report(
         results,
         root=root,
         fmt=args.format,
         show_ok=args.show_ok,
         output_file=args.output,
     )
+
+    if args.suggest:
+        from .suggest import suggest_fixes
+        suggest_fixes(results)
+
+    return exit_code
 
 
 def _run_plain(args: argparse.Namespace, root: Path) -> int:
@@ -188,18 +221,26 @@ def _run_plain(args: argparse.Namespace, root: Path) -> int:
         max_workers=args.workers,
         ignore_patterns=args.ignore,
         progress_cb=_progress_cb if is_tty else None,
+        cache_ttl=args.cache_ttl if args.cache_ttl > 0 else None,
+        no_cache=args.no_cache,
     )
 
     if is_tty:
         print("\r" + " " * 40 + "\r", end="", flush=True)
 
-    return write_report(
+    exit_code = write_report(
         results,
         root=root,
         fmt=args.format,
         show_ok=args.show_ok,
         output_file=args.output,
     )
+
+    if args.suggest:
+        from .suggest import suggest_fixes
+        suggest_fixes(results)
+
+    return exit_code
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -211,6 +252,11 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = _build_parser(cfg)
     args = parser.parse_args(argv)
+
+    if args.clear_cache:
+        n = clear_cache()
+        print(f"linkrot: cleared {n} cached result{'s' if n != 1 else ''}.")
+        return 0
 
     root = Path(args.path).resolve()
     if not root.exists():

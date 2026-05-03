@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "linkrot"
-version = "1.2.0"
+version = "1.3.0"
 description = "Find broken links in Markdown and HTML files"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -21,6 +21,8 @@ classifiers = [
 ]
 dependencies = [
     "rich>=12.0",
+    "httpx[http2]>=0.27",
+    "anthropic>=0.20.0",
 ]
 
 [project.scripts]

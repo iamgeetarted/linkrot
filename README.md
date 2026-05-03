@@ -5,7 +5,60 @@
 `linkrot` scans a directory tree for `.md` and `.html` files, extracts every link, and tells you which ones are dead. It checks:
 
 - **Internal links** — file existence and heading anchors (`#section`)
-- **External URLs** — concurrent HTTP HEAD requests with fallback to GET
+- **External URLs** — fully async HTTP/2 requests with deduplication and on-disk caching
+
+---
+
+## What's New in v1.3.0
+
+### 1. Full async upgrade with httpx
+
+External URL checking now uses `asyncio` + `httpx.AsyncClient` instead of `ThreadPoolExecutor` + `urllib`. This brings proper HTTP/2 support, better connection pooling, and cleaner concurrency via `asyncio.Semaphore` — all without changing the CLI interface.
+
+```bash
+# Same command, now backed by an async engine
+linkrot docs/ --workers 40
+```
+
+### 2. On-disk URL result cache (`~/.cache/linkrot/`)
+
+External URL checks are cached to `~/.cache/linkrot/` (MD5-keyed JSON files) with a configurable TTL. Re-running on the same docs skips already-verified URLs, making repeated runs near-instant.
+
+```bash
+linkrot .                       # caches results for 24 h (default)
+linkrot . --cache-ttl 48        # keep cache valid for 48 hours
+linkrot . --cache-ttl 0         # TTL=0 effectively disables caching logic
+linkrot . --no-cache            # bypass cache entirely, re-check everything
+linkrot --clear-cache           # wipe all cached results
+```
+
+Config file support (`.linkrot.toml`):
+
+```toml
+cache_ttl  = 12.0   # hours
+no_cache   = false
+```
+
+### 3. AI fix suggestions (`--suggest`)
+
+After the broken-link report, stream Claude Haiku suggestions for each dead external URL — probable reason it broke, likely replacement, and whether the Wayback Machine has a snapshot.
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+linkrot docs/ --suggest
+```
+
+```
+── AI Suggestions for Broken Links ──────────────────────────────────────────
+1. https://old.example.com/guide  [http-404]
+   → Likely moved to https://example.com/docs/guide (domain restructure).
+     Wayback Machine snapshot probable.
+2. https://deprecated-api.io/v1  [error]
+   → Domain no longer resolves; service appears shut down.
+     Search for successor at https://github.com/search?q=deprecated-api
+```
+
+Requires `ANTHROPIC_API_KEY` in your environment. Suggestions are streamed token-by-token as they arrive.
 
 ---
 
@@ -96,7 +149,7 @@ cd linkrot
 pip install -e .
 ```
 
-**Requires Python 3.11+. No third-party dependencies.**
+**Requires Python 3.11+. Dependencies: `rich`, `httpx[http2]`, `anthropic` (optional for `--suggest`).**
 
 ---
 
