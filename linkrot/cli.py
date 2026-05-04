@@ -41,6 +41,7 @@ examples:
   linkrot . --ignore 'localhost'   # ignore URLs matching pattern
   linkrot . --show-ok              # show passing links too
   linkrot . --timeout 5            # 5s timeout for HTTP requests
+  linkrot . --format github        # GitHub Actions annotations
 """,
     )
     p.add_argument("path", nargs="?", default=".", help="Directory to scan (default: .)")
@@ -52,7 +53,7 @@ examples:
     )
     p.add_argument(
         "--format", "-f",
-        choices=["table", "json", "csv", "markdown"],
+        choices=["table", "json", "csv", "markdown", "github"],
         default=cfg.get("format", "table"),
         help="Output format (default: table)",
     )
@@ -108,13 +109,52 @@ examples:
         default=cfg.get("suggest", False),
         help="After the report, stream AI suggestions for broken external links (requires ANTHROPIC_API_KEY)",
     )
+    p.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        default=cfg.get("verbose", False),
+        help="Print timing breakdown and cache statistics after the report",
+    )
     p.add_argument("--version", action="version", version=f"linkrot {__version__}")
     return p
 
 
+def _print_verbose_summary(
+    console: "Console",
+    scan_elapsed: float,
+    check_elapsed: float,
+    results: list,
+    args: "argparse.Namespace",
+) -> None:
+    from rich.table import Table, box as rbox
+    from rich.panel import Panel
+    from collections import Counter
+
+    status_counts: Counter = Counter(r.status for r in results)
+    broken = [r for r in results if not r.ok]
+
+    t = Table(box=rbox.SIMPLE, show_header=True, header_style="bold cyan", pad_edge=False)
+    t.add_column("Metric", style="cyan")
+    t.add_column("Value", justify="right", style="white")
+    t.add_row("Scan time", f"{scan_elapsed:.2f}s")
+    t.add_row("Check time", f"{check_elapsed:.2f}s")
+    t.add_row("Total time", f"{scan_elapsed + check_elapsed:.2f}s")
+    t.add_row("Links checked", str(len(results)))
+    t.add_row("Broken", str(len(broken)))
+
+    if status_counts:
+        t.add_section()
+        for status, count in sorted(status_counts.items(), key=lambda x: -x[1]):
+            t.add_row(f"  {status}", str(count))
+
+    console.print(Panel(t, title="[bold]Timing & Stats[/bold]", border_style="dim", box=rbox.ROUNDED))
+
+
 def _run_with_rich(args: argparse.Namespace, root: Path) -> int:
+    import time
     console = Console(stderr=True)
 
+    t0 = time.perf_counter()
     with Progress(
         SpinnerColumn(),
         TextColumn("[bold cyan]{task.description}"),
@@ -124,6 +164,7 @@ def _run_with_rich(args: argparse.Namespace, root: Path) -> int:
         task = progress.add_task("Scanning files…", total=None)
         scan = scan_directory(root)
         progress.remove_task(task)
+    scan_elapsed = time.perf_counter() - t0
 
     console.print(
         f"Found [bold]{len(scan.links)}[/bold] links in"
@@ -151,6 +192,7 @@ def _run_with_rich(args: argparse.Namespace, root: Path) -> int:
         def _cb(done: int, tot: int) -> None:
             progress.update(task, completed=done)
 
+        t1 = time.perf_counter()
         results = check_links(
             scan.links,
             root=root,
@@ -162,6 +204,7 @@ def _run_with_rich(args: argparse.Namespace, root: Path) -> int:
             cache_ttl=args.cache_ttl if args.cache_ttl > 0 else None,
             no_cache=args.no_cache,
         )
+        check_elapsed = time.perf_counter() - t1
 
     exit_code = write_report(
         results,
@@ -174,6 +217,9 @@ def _run_with_rich(args: argparse.Namespace, root: Path) -> int:
     if args.suggest:
         from .suggest import suggest_fixes
         suggest_fixes(results)
+
+    if args.verbose:
+        _print_verbose_summary(console, scan_elapsed, check_elapsed, results, args)
 
     return exit_code
 
@@ -198,7 +244,9 @@ def _run_plain(args: argparse.Namespace, root: Path) -> int:
         t = threading.Thread(target=_spinner, args=(stop, "Scanning files…"), daemon=True)
         t.start()
 
+    t0 = time.perf_counter()
     scan = scan_directory(root)
+    scan_elapsed = time.perf_counter() - t0
 
     if is_tty:
         stop.set()
@@ -213,6 +261,7 @@ def _run_plain(args: argparse.Namespace, root: Path) -> int:
         if is_tty:
             print(f"\r  Checking {done}/{tot}…", end="", flush=True)
 
+    t1 = time.perf_counter()
     results = check_links(
         scan.links,
         root=root,
@@ -224,6 +273,7 @@ def _run_plain(args: argparse.Namespace, root: Path) -> int:
         cache_ttl=args.cache_ttl if args.cache_ttl > 0 else None,
         no_cache=args.no_cache,
     )
+    check_elapsed = time.perf_counter() - t1
 
     if is_tty:
         print("\r" + " " * 40 + "\r", end="", flush=True)
@@ -239,6 +289,15 @@ def _run_plain(args: argparse.Namespace, root: Path) -> int:
     if args.suggest:
         from .suggest import suggest_fixes
         suggest_fixes(results)
+
+    if args.verbose:
+        from collections import Counter
+        status_counts = Counter(r.status for r in results)
+        broken_count = sum(1 for r in results if not r.ok)
+        print(f"\n[Timing] scan={scan_elapsed:.2f}s  check={check_elapsed:.2f}s  total={scan_elapsed+check_elapsed:.2f}s")
+        print(f"[Stats]  checked={len(results)}  broken={broken_count}")
+        for status, count in sorted(status_counts.items(), key=lambda x: -x[1]):
+            print(f"         {status}: {count}")
 
     return exit_code
 

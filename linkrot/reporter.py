@@ -130,6 +130,17 @@ def report_rich_table(
     )
     console.print(summary)
 
+    # Category breakdown
+    from collections import Counter
+    broken_statuses: Counter = Counter(r.status for r in broken)
+    if len(broken_statuses) > 1:
+        breakdown = Table(box=rich_box.SIMPLE, show_header=False, pad_edge=False)
+        breakdown.add_column("Status", style="dim")
+        breakdown.add_column("Count", justify="right", style="yellow")
+        for status, count in sorted(broken_statuses.items(), key=lambda x: -x[1]):
+            breakdown.add_row(f"  {status}", str(count))
+        console.print(breakdown)
+
 
 def report_table(
     results: list[CheckResult],
@@ -272,6 +283,24 @@ def report_markdown(
     return "\n".join(lines)
 
 
+def report_github_annotations(results: list[CheckResult], root: Path) -> str:
+    """Emit GitHub Actions workflow commands for broken links."""
+    lines: list[str] = []
+    for cr in sorted(results, key=lambda r: (str(r.link.source_file), r.link.line_number)):
+        if cr.ok:
+            continue
+        rel = (
+            str(cr.link.source_file.relative_to(root))
+            if cr.link.source_file.is_relative_to(root)
+            else str(cr.link.source_file)
+        )
+        url = _url_display(cr)
+        detail = cr.detail or cr.status
+        title = f"Broken link ({cr.status})"
+        lines.append(f"::error file={rel},line={cr.link.line_number},title={title}::{url} — {detail}")
+    return "\n".join(lines)
+
+
 def write_report(
     results: list[CheckResult],
     root: Path,
@@ -295,6 +324,12 @@ def write_report(
             print(text)
     elif fmt == "markdown":
         text = report_markdown(results, root, show_ok=show_ok)
+        if output_file:
+            Path(output_file).write_text(text, encoding="utf-8")
+        else:
+            print(text)
+    elif fmt == "github":
+        text = report_github_annotations(results, root)
         if output_file:
             Path(output_file).write_text(text, encoding="utf-8")
         else:

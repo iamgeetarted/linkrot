@@ -280,3 +280,23 @@ pytest tests/
 ## License
 
 MIT
+
+## What's New in v1.4.0
+
+### GitHub Actions Annotations (`--format github`)
+Emit inline PR annotations for broken links in CI:
+```yaml
+- name: Check links
+  run: linkrot docs/ --format github
+```
+Output format: `::error file=docs/README.md,line=42,title=Broken link (http-404)::https://example.com/old`
+
+### Verbose Mode (`--verbose`)
+See timing breakdowns and status-code distributions after the scan:
+```bash
+linkrot . --verbose
+# → Timing & Stats panel: scan time, check time, per-status counts
+```
+
+### Status Breakdown
+Broken links are now categorized by failure type (http-404, timeout, error, etc.) in the terminal summary for faster triage.

@@ -40,8 +40,8 @@ def load_config() -> dict[str, Any]:
             isinstance(s, str) for s in merged["ignore"]
         ):
             raise ValueError("Config 'ignore' must be a list of strings")
-    if "format" in merged and merged["format"] not in {"table", "json", "csv", "markdown"}:
-        raise ValueError("Config 'format' must be one of: table, json, csv, markdown")
+    if "format" in merged and merged["format"] not in {"table", "json", "csv", "markdown", "github"}:
+        raise ValueError("Config 'format' must be one of: table, json, csv, markdown, github")
     if "show_ok" in merged and not isinstance(merged["show_ok"], bool):
         raise ValueError("Config 'show_ok' must be a boolean")
     if "no_external" in merged and not isinstance(merged["no_external"], bool):
