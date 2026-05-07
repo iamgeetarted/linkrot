@@ -42,6 +42,9 @@ examples:
   linkrot . --show-ok              # show passing links too
   linkrot . --timeout 5            # 5s timeout for HTTP requests
   linkrot . --format github        # GitHub Actions annotations
+  linkrot . --retries 3            # retry 429/5xx up to 3 times
+  linkrot . --show-redirects       # report URLs that changed destination
+  linkrot . --watch 60             # re-check every 60s, show diff
 """,
     )
     p.add_argument("path", nargs="?", default=".", help="Directory to scan (default: .)")
@@ -115,6 +118,33 @@ examples:
         default=cfg.get("verbose", False),
         help="Print timing breakdown and cache statistics after the report",
     )
+    p.add_argument(
+        "--retries",
+        type=int,
+        default=cfg.get("retries", 2),
+        metavar="N",
+        help="Retry transient failures (429/5xx) up to N times (default: 2)",
+    )
+    p.add_argument(
+        "--retry-backoff",
+        type=float,
+        default=cfg.get("retry_backoff", 1.0),
+        metavar="SECONDS",
+        help="Base backoff seconds between retries, doubles each attempt (default: 1.0)",
+    )
+    p.add_argument(
+        "--show-redirects",
+        action="store_true",
+        default=cfg.get("show_redirects", False),
+        help="Print a table of URLs that redirect to a different destination",
+    )
+    p.add_argument(
+        "--watch",
+        type=int,
+        default=cfg.get("watch", 0),
+        metavar="SECS",
+        help="Re-run every SECS seconds and show diff of newly broken/fixed links (0 = disabled)",
+    )
     p.add_argument("--version", action="version", version=f"linkrot {__version__}")
     return p
 
@@ -150,9 +180,45 @@ def _print_verbose_summary(
     console.print(Panel(t, title="[bold]Timing & Stats[/bold]", border_style="dim", box=rbox.ROUNDED))
 
 
-def _run_with_rich(args: argparse.Namespace, root: Path) -> int:
+def _print_redirects(console: "Console", results: list) -> None:
+    """Print a Rich table of URLs that were redirected to a different destination."""
+    from rich.table import Table, box as rbox
+
+    redirects = [r for r in results if r.ok and r.final_url]
+    if not redirects:
+        console.print("[dim]No redirects detected.[/dim]")
+        return
+
+    t = Table(
+        box=rbox.ROUNDED,
+        show_header=True,
+        header_style="bold cyan",
+        border_style="cyan",
+        title="[bold]Redirect Report[/bold]",
+    )
+    t.add_column("File", style="cyan", no_wrap=True)
+    t.add_column("Original URL", no_wrap=False)
+    t.add_column("→ Final URL", style="yellow", no_wrap=False)
+
+    for cr in sorted(redirects, key=lambda r: str(r.link.source_file)):
+        try:
+            rel = str(cr.link.source_file.relative_to(root))
+        except ValueError:
+            rel = str(cr.link.source_file)
+        t.add_row(rel, cr.link.url, cr.final_url or "")
+
+    console.print(t)
+    console.print(f"[dim]{len(redirects)} redirect{'s' if len(redirects) != 1 else ''} found.[/dim]")
+
+
+def _one_pass_rich(
+    args: argparse.Namespace,
+    root: Path,
+    console: "Console",
+    prev_broken: set[str] | None = None,
+) -> tuple[int, list, float, float]:
+    """Run one scan+check pass and return (exit_code, results, scan_elapsed, check_elapsed)."""
     import time
-    console = Console(stderr=True)
 
     t0 = time.perf_counter()
     with Progress(
@@ -174,7 +240,7 @@ def _run_with_rich(args: argparse.Namespace, root: Path) -> int:
 
     if not scan.links:
         console.print("No links found.")
-        return 0
+        return 0, [], scan_elapsed, 0.0
 
     total = len(scan.links)
 
@@ -203,6 +269,8 @@ def _run_with_rich(args: argparse.Namespace, root: Path) -> int:
             progress_cb=_cb,
             cache_ttl=args.cache_ttl if args.cache_ttl > 0 else None,
             no_cache=args.no_cache,
+            retries=args.retries,
+            retry_backoff=args.retry_backoff,
         )
         check_elapsed = time.perf_counter() - t1
 
@@ -214,6 +282,13 @@ def _run_with_rich(args: argparse.Namespace, root: Path) -> int:
         output_file=args.output,
     )
 
+    if args.show_redirects:
+        console.print()
+        _print_redirects(console, results)
+
+    if prev_broken is not None:
+        _print_watch_diff(console, results, prev_broken)
+
     if args.suggest:
         from .suggest import suggest_fixes
         suggest_fixes(results)
@@ -221,6 +296,52 @@ def _run_with_rich(args: argparse.Namespace, root: Path) -> int:
     if args.verbose:
         _print_verbose_summary(console, scan_elapsed, check_elapsed, results, args)
 
+    return exit_code, results, scan_elapsed, check_elapsed
+
+
+def _print_watch_diff(console: "Console", results: list, prev_broken: set[str]) -> None:
+    """Highlight newly broken and newly fixed links compared to previous run."""
+    from rich.rule import Rule
+
+    curr_broken = {r.link.url for r in results if not r.ok}
+    newly_broken = curr_broken - prev_broken
+    newly_fixed = prev_broken - curr_broken
+
+    if not newly_broken and not newly_fixed:
+        console.print("[dim]  ↻ No changes since last run.[/dim]")
+        return
+
+    console.print()
+    console.print(Rule("[bold]Watch Diff[/bold]", style="cyan"))
+    for url in sorted(newly_broken):
+        console.print(f"  [bold red]✗ NEW BROKEN:[/bold red] {url}")
+    for url in sorted(newly_fixed):
+        console.print(f"  [bold green]✓ NOW FIXED:[/bold green]  {url}")
+
+
+def _run_with_rich(args: argparse.Namespace, root: Path) -> int:
+    import time
+    console = Console(stderr=True)
+
+    if args.watch:
+        prev_broken: set[str] | None = None
+        iteration = 0
+        while True:
+            if iteration > 0:
+                console.clear()
+            exit_code, results, _, _ = _one_pass_rich(args, root, console, prev_broken)
+            prev_broken = {r.link.url for r in results if not r.ok}
+            console.print(
+                f"[dim]  ↻ watch mode — refreshing in {args.watch}s (Ctrl-C to stop)[/dim]"
+            )
+            try:
+                time.sleep(args.watch)
+            except KeyboardInterrupt:
+                break
+            iteration += 1
+        return 0
+
+    exit_code, _, _, _ = _one_pass_rich(args, root, console, prev_broken=None)
     return exit_code
 
 
@@ -272,6 +393,8 @@ def _run_plain(args: argparse.Namespace, root: Path) -> int:
         progress_cb=_progress_cb if is_tty else None,
         cache_ttl=args.cache_ttl if args.cache_ttl > 0 else None,
         no_cache=args.no_cache,
+        retries=args.retries,
+        retry_backoff=args.retry_backoff,
     )
     check_elapsed = time.perf_counter() - t1
 

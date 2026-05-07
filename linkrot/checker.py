@@ -20,6 +20,7 @@ class CheckResult:
     ok: bool
     status: str  # "ok", "missing", "anchor-missing", "error", "timeout", "http-NNN"
     detail: str = ""
+    final_url: str | None = None  # redirect destination if URL was redirected
 
 
 # ---------------------------------------------------------------------------
@@ -91,29 +92,65 @@ def _check_anchor(path: Path, anchor: str) -> tuple[bool, str]:
 # Async external checking with httpx
 # ---------------------------------------------------------------------------
 
-_UA = "linkrot/1.3 (https://github.com/iamgeetarted/linkrot)"
+_UA = "linkrot/1.5 (https://github.com/iamgeetarted/linkrot)"
+
+# HTTP status codes worth retrying
+_RETRY_STATUSES = {429, 500, 502, 503, 504}
 
 
-async def _check_one_url(url: str, client: httpx.AsyncClient, timeout: float) -> tuple[bool, str, str]:
-    """Return (ok, status, detail) for a single URL."""
+async def _check_one_url(
+    url: str,
+    client: httpx.AsyncClient,
+    timeout: float,
+    retries: int = 2,
+    retry_backoff: float = 1.0,
+) -> tuple[bool, str, str, str | None]:
+    """Return (ok, status, detail, final_url) for a single URL.
+
+    final_url is the redirect destination when it differs from url, else None.
+    """
     if url.startswith("//"):
         url = "https:" + url
-    try:
-        resp = await client.head(url, follow_redirects=True)
-        code = resp.status_code
-        if code == 405:
-            resp = await client.get(url, follow_redirects=True)
+
+    attempt = 0
+    while True:
+        try:
+            resp = await client.head(url, follow_redirects=True)
             code = resp.status_code
-        if code < 400:
-            return True, "ok", f"HTTP {code}"
-        return False, f"http-{code}", f"HTTP {code}"
-    except httpx.TimeoutException:
-        return False, "timeout", f"Timed out after {timeout}s"
-    except Exception as exc:
-        msg = str(exc)[:120]
-        if "timed out" in msg.lower():
-            return False, "timeout", msg
-        return False, "error", msg
+            if code == 405:
+                resp = await client.get(url, follow_redirects=True)
+                code = resp.status_code
+
+            # Detect redirect destination
+            final = str(resp.url) if str(resp.url) != url else None
+
+            if code in _RETRY_STATUSES and attempt < retries:
+                wait = retry_backoff * (2 ** attempt)
+                await asyncio.sleep(wait)
+                attempt += 1
+                continue
+
+            if code < 400:
+                return True, "ok", f"HTTP {code}", final
+            return False, f"http-{code}", f"HTTP {code}", final
+
+        except httpx.TimeoutException:
+            if attempt < retries:
+                wait = retry_backoff * (2 ** attempt)
+                await asyncio.sleep(wait)
+                attempt += 1
+                continue
+            return False, "timeout", f"Timed out after {timeout}s", None
+        except Exception as exc:
+            msg = str(exc)[:120]
+            if attempt < retries and ("connection" in msg.lower() or "network" in msg.lower()):
+                wait = retry_backoff * (2 ** attempt)
+                await asyncio.sleep(wait)
+                attempt += 1
+                continue
+            if "timed out" in msg.lower():
+                return False, "timeout", msg, None
+            return False, "error", msg, None
 
 
 async def _fetch_all_external(
@@ -124,6 +161,8 @@ async def _fetch_all_external(
     progress_cb: Callable[[int, int], None] | None,
     start_done: int,
     total: int,
+    retries: int = 2,
+    retry_backoff: float = 1.0,
 ) -> list[CheckResult]:
     semaphore = asyncio.Semaphore(max_workers)
     counter = [start_done]
@@ -147,7 +186,10 @@ async def _fetch_all_external(
                     return CheckResult(link, cached.ok, cached.status, cached.detail)
 
             async with semaphore:
-                ok, status, detail = await _check_one_url(link.url, client, timeout)
+                ok, status, detail, final_url = await _check_one_url(
+                    link.url, client, timeout,
+                    retries=retries, retry_backoff=retry_backoff,
+                )
 
             if cache_ttl is not None:
                 set_cached(link.url, ok, status, detail)
@@ -157,7 +199,7 @@ async def _fetch_all_external(
                 if progress_cb:
                     progress_cb(counter[0], total)
 
-            return CheckResult(link, ok, status, detail)
+            return CheckResult(link, ok, status, detail, final_url=final_url)
 
         return list(await asyncio.gather(*(_do(link) for link in links)))
 
@@ -176,6 +218,8 @@ def check_links(
     progress_cb: Callable[[int, int], None] | None = None,
     cache_ttl: float | None = 24.0,
     no_cache: bool = False,
+    retries: int = 2,
+    retry_backoff: float = 1.0,
 ) -> list[CheckResult]:
     """Check all links; returns a list of CheckResult."""
     ignore_res = [re.compile(p) for p in (ignore_patterns or [])]
@@ -218,6 +262,8 @@ def check_links(
                 progress_cb=progress_cb,
                 start_done=done,
                 total=total,
+                retries=retries,
+                retry_backoff=retry_backoff,
             )
         )
         for cr in ext_results:

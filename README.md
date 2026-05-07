@@ -281,6 +281,59 @@ pytest tests/
 
 MIT
 
+## What's New in v1.5.0
+
+### 1. Retry Logic with Exponential Backoff (`--retries`, `--retry-backoff`)
+
+Transient failures (HTTP 429, 500, 502, 503, 504, and network errors) are automatically retried before being reported as broken. This dramatically reduces false positives from rate-limited or momentarily unavailable servers.
+
+```bash
+linkrot . --retries 3               # retry up to 3 times (default: 2)
+linkrot . --retries 3 --retry-backoff 2.0   # 2s, 4s, 8s waits
+linkrot . --retries 0               # disable retries entirely
+```
+
+Backoff doubles on each attempt: with `--retry-backoff 1.0` the waits are 1s → 2s → 4s.
+
+### 2. Watch Mode (`--watch SECS`)
+
+Re-run the full scan every N seconds and show a **diff** of what changed — newly broken links highlighted in red, newly fixed links in green. Perfect for keeping a terminal open while editing docs.
+
+```bash
+linkrot . --watch 30        # re-check every 30 seconds
+linkrot docs/ --watch 60    # works with any other flags
+```
+
+Output after the first run:
+```
+↻ watch mode — refreshing in 30s (Ctrl-C to stop)
+```
+Subsequent runs print the diff:
+```
+─────────────────── Watch Diff ──────────────────────────────────
+  ✗ NEW BROKEN:  https://example.com/moved-page
+  ✓ NOW FIXED:   https://example.com/was-down
+```
+
+### 3. Redirect Tracking (`--show-redirects`)
+
+After the main report, print a table of every URL that answered OK but redirected to a different final destination. Useful for finding outdated links that still "work" but should be updated to point directly at the new location.
+
+```bash
+linkrot . --show-redirects
+```
+
+```
+╭─────────────────────────────── Redirect Report ───────────────────────────────╮
+│ File              │ Original URL                   │ → Final URL               │
+│ docs/install.md   │ https://old.example.com/guide  │ https://example.com/guide │
+│ docs/api.md       │ http://example.com/api         │ https://example.com/api   │
+╰───────────────────────────────────────────────────────────────────────────────╯
+2 redirects found.
+```
+
+---
+
 ## What's New in v1.4.0
 
 ### GitHub Actions Annotations (`--format github`)
