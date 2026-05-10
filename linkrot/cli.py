@@ -56,7 +56,7 @@ examples:
     )
     p.add_argument(
         "--format", "-f",
-        choices=["table", "json", "csv", "markdown", "github"],
+        choices=["table", "json", "csv", "markdown", "github", "sarif"],
         default=cfg.get("format", "table"),
         help="Output format (default: table)",
     )
@@ -145,6 +145,24 @@ examples:
         metavar="SECS",
         help="Re-run every SECS seconds and show diff of newly broken/fixed links (0 = disabled)",
     )
+    p.add_argument(
+        "--sitemap",
+        action="store_true",
+        default=cfg.get("sitemap", False),
+        help="Discover sitemap.xml / sitemap_index.xml files and add their URLs to the check queue",
+    )
+    p.add_argument(
+        "--save-baseline",
+        metavar="FILE",
+        default=None,
+        help="Save broken URLs to FILE as a JSON baseline after checking",
+    )
+    p.add_argument(
+        "--load-baseline",
+        metavar="FILE",
+        default=None,
+        help="Load a baseline FILE; only report links that are new breakages not in the baseline",
+    )
     p.add_argument("--version", action="version", version=f"linkrot {__version__}")
     return p
 
@@ -232,6 +250,16 @@ def _one_pass_rich(
         progress.remove_task(task)
     scan_elapsed = time.perf_counter() - t0
 
+    if args.sitemap:
+        from .sitemap import discover_sitemaps
+        sitemap_links = discover_sitemaps(root)
+        if sitemap_links:
+            scan.links.extend(sitemap_links)
+            console.print(
+                f"[dim]Sitemap: added {len(sitemap_links)} URL(s) from sitemap files.[/dim]",
+                highlight=False,
+            )
+
     console.print(
         f"Found [bold]{len(scan.links)}[/bold] links in"
         f" [bold]{scan.files_scanned}[/bold] files.",
@@ -274,6 +302,23 @@ def _one_pass_rich(
         )
         check_elapsed = time.perf_counter() - t1
 
+    # Baseline: load, filter, and summarise
+    baseline_urls: set[str] = set()
+    if args.load_baseline:
+        from .baseline import load_baseline
+        from pathlib import Path as _Path
+        baseline_urls = load_baseline(_Path(args.load_baseline))
+        if baseline_urls:
+            new_results = [r for r in results if r.ok or r.link.url not in baseline_urls]
+            suppressed = len(results) - len(new_results)
+            new_broken = sum(1 for r in new_results if not r.ok)
+            console.print(
+                f"[dim]Baseline: [bold]{new_broken}[/bold] new breakage(s),"
+                f" [bold]{suppressed}[/bold] known from baseline (suppressed).[/dim]",
+                highlight=False,
+            )
+            results = new_results
+
     exit_code = write_report(
         results,
         root=root,
@@ -281,6 +326,15 @@ def _one_pass_rich(
         show_ok=args.show_ok,
         output_file=args.output,
     )
+
+    if args.save_baseline:
+        from .baseline import save_baseline
+        from pathlib import Path as _Path
+        save_baseline(_Path(args.save_baseline), results)
+        console.print(
+            f"[dim]Baseline saved to {args.save_baseline}[/dim]",
+            highlight=False,
+        )
 
     if args.show_redirects:
         console.print()
@@ -372,6 +426,16 @@ def _run_plain(args: argparse.Namespace, root: Path) -> int:
     if is_tty:
         stop.set()
         t.join()
+
+    if args.sitemap:
+        from .sitemap import discover_sitemaps
+        sitemap_links = discover_sitemaps(root)
+        if sitemap_links:
+            scan.links.extend(sitemap_links)
+            if is_tty:
+                print(f"Sitemap: added {len(sitemap_links)} URL(s) from sitemap files.")
+
+    if is_tty:
         print(f"Found {len(scan.links)} links in {scan.files_scanned} files.")
 
     if not scan.links:
@@ -401,6 +465,20 @@ def _run_plain(args: argparse.Namespace, root: Path) -> int:
     if is_tty:
         print("\r" + " " * 40 + "\r", end="", flush=True)
 
+    # Baseline: load, filter, and summarise
+    if args.load_baseline:
+        from .baseline import load_baseline
+        baseline_urls = load_baseline(Path(args.load_baseline))
+        if baseline_urls:
+            new_results = [r for r in results if r.ok or r.link.url not in baseline_urls]
+            suppressed = len(results) - len(new_results)
+            new_broken = sum(1 for r in new_results if not r.ok)
+            print(
+                f"Baseline: {new_broken} new breakage(s),"
+                f" {suppressed} known from baseline (suppressed)."
+            )
+            results = new_results
+
     exit_code = write_report(
         results,
         root=root,
@@ -408,6 +486,12 @@ def _run_plain(args: argparse.Namespace, root: Path) -> int:
         show_ok=args.show_ok,
         output_file=args.output,
     )
+
+    if args.save_baseline:
+        from .baseline import save_baseline
+        save_baseline(Path(args.save_baseline), results)
+        if is_tty:
+            print(f"Baseline saved to {args.save_baseline}")
 
     if args.suggest:
         from .suggest import suggest_fixes

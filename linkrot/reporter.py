@@ -283,6 +283,88 @@ def report_markdown(
     return "\n".join(lines)
 
 
+def report_sarif(results: list[CheckResult], root: Path) -> str:
+    """Serialize broken links as SARIF v2.1.0 JSON."""
+    from . import __version__
+
+    _RULES = {
+        "LR001": "Broken internal link — target file not found or anchor missing.",
+        "LR002": "Broken external URL — HTTP error, timeout, or connection failure.",
+        "LR003": "Anchor not found — the target file exists but the fragment is missing.",
+    }
+
+    def _rule_id(cr: CheckResult) -> str:
+        if cr.status == "anchor-missing":
+            return "LR003"
+        if cr.link.is_external:
+            return "LR002"
+        return "LR001"
+
+    rules = [
+        {
+            "id": rule_id,
+            "name": rule_id,
+            "shortDescription": {"text": desc},
+            "helpUri": "https://github.com/iamgeetarted/linkrot",
+        }
+        for rule_id, desc in _RULES.items()
+    ]
+
+    sarif_results = []
+    for cr in results:
+        if cr.ok:
+            continue
+        rel = (
+            str(cr.link.source_file.relative_to(root))
+            if cr.link.source_file.is_relative_to(root)
+            else str(cr.link.source_file)
+        )
+        # SARIF uses forward slashes for URIs
+        uri = rel.replace("\\", "/")
+        sarif_results.append(
+            {
+                "ruleId": _rule_id(cr),
+                "level": "error",
+                "message": {
+                    "text": (
+                        f"{_url_display(cr)} — {cr.detail}"
+                        if cr.detail
+                        else _url_display(cr)
+                    )
+                },
+                "locations": [
+                    {
+                        "physicalLocation": {
+                            "artifactLocation": {"uri": uri},
+                            "region": {"startLine": cr.link.line_number},
+                        }
+                    }
+                ],
+            }
+        )
+
+    sarif_doc = {
+        "$schema": (
+            "https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0-rtm.6.json"
+        ),
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "linkrot",
+                        "version": __version__,
+                        "informationUri": "https://github.com/iamgeetarted/linkrot",
+                        "rules": rules,
+                    }
+                },
+                "results": sarif_results,
+            }
+        ],
+    }
+    return json.dumps(sarif_doc, indent=2)
+
+
 def report_github_annotations(results: list[CheckResult], root: Path) -> str:
     """Emit GitHub Actions workflow commands for broken links."""
     lines: list[str] = []
@@ -330,6 +412,12 @@ def write_report(
             print(text)
     elif fmt == "github":
         text = report_github_annotations(results, root)
+        if output_file:
+            Path(output_file).write_text(text, encoding="utf-8")
+        else:
+            print(text)
+    elif fmt == "sarif":
+        text = report_sarif(results, root)
         if output_file:
             Path(output_file).write_text(text, encoding="utf-8")
         else:

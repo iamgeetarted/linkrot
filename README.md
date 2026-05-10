@@ -2,6 +2,53 @@
 
 **Find broken links in Markdown and HTML files — fast.**
 
+---
+
+## What's New in v1.6.0
+
+### 1. SARIF output format (`--format sarif`)
+
+Export results as [SARIF v2.1.0](https://sarifweb.azurewebsites.net/) — the standard consumed by GitHub Code Scanning — so broken links appear as inline code-scanning alerts on pull requests.
+
+```bash
+linkrot . --format sarif -o results.sarif
+```
+
+Each broken link becomes a SARIF result with a rule ID (`LR001` internal, `LR002` external, `LR003` anchor-missing), `"error"` severity, a human-readable message, and a precise file + line location.
+
+### 2. Sitemap discovery (`--sitemap`)
+
+Automatically find `sitemap.xml` and `sitemap_index.xml` files anywhere under the scanned directory, extract every `<loc>` URL, and add them to the check queue as external links. Sitemap index files (which list other sitemaps) are followed one level deep via HTTP fetch.
+
+```bash
+linkrot . --sitemap
+linkrot . --sitemap --no-external   # parse sitemaps but skip HTTP checks
+```
+
+Discovered URLs respect `--ignore` patterns and `--no-external` exactly like any other link.
+
+### 3. Baseline delta tracking (`--save-baseline` / `--load-baseline`)
+
+Save the set of currently broken URLs to a JSON file after a run, then load that baseline on future runs to suppress already-known failures and highlight only **new** breakages.
+
+```bash
+# First run — establish a baseline
+linkrot . --save-baseline baseline.json
+
+# Later runs — only report new failures
+linkrot . --load-baseline baseline.json
+
+# Combine: update baseline and report new breakages
+linkrot . --load-baseline baseline.json --save-baseline baseline.json
+```
+
+Output when a baseline is active:
+```
+Baseline: 2 new breakage(s), 5 known from baseline (suppressed).
+```
+
+---
+
 `linkrot` scans a directory tree for `.md` and `.html` files, extracts every link, and tells you which ones are dead. It checks:
 
 - **Internal links** — file existence and heading anchors (`#section`)
