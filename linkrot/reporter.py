@@ -383,6 +383,94 @@ def report_github_annotations(results: list[CheckResult], root: Path) -> str:
     return "\n".join(lines)
 
 
+def report_domain_summary(results: list[CheckResult], console: "Console | None" = None) -> None:
+    """Print a per-domain breakdown of external link health as a Rich table.
+
+    Groups all external URLs by hostname and shows total checked, broken count,
+    failure rate, and the most common failure status per domain.  Sorted by
+    broken count descending so the worst offenders appear first.
+
+    Args:
+        results: All check results (internal + external).
+        console: Rich Console to print to; creates one if omitted.
+    """
+    from urllib.parse import urlparse
+    from collections import defaultdict, Counter
+
+    external = [r for r in results if r.link.is_external]
+    if not external:
+        return
+
+    domain_total: dict[str, int] = defaultdict(int)
+    domain_broken: dict[str, int] = defaultdict(int)
+    domain_statuses: dict[str, Counter] = defaultdict(Counter)
+
+    for r in external:
+        try:
+            domain = urlparse(r.link.url).netloc or r.link.url
+        except Exception:
+            domain = r.link.url
+
+        domain_total[domain] += 1
+        if not r.ok:
+            domain_broken[domain] += 1
+            domain_statuses[domain][r.status] += 1
+
+    domains = sorted(domain_total.keys(), key=lambda d: (-domain_broken.get(d, 0), d))
+
+    if _RICH:
+        if console is None:
+            console = Console(highlight=False)
+
+        t = Table(
+            box=rich_box.ROUNDED,
+            show_header=True,
+            header_style="bold cyan",
+            border_style="cyan",
+            title="[bold]Domain Health Summary[/bold]",
+        )
+        t.add_column("Domain", style="cyan", no_wrap=True)
+        t.add_column("Total", justify="right", style="dim")
+        t.add_column("Broken", justify="right")
+        t.add_column("% Broken", justify="right")
+        t.add_column("Top Status", style="dim")
+
+        for domain in domains:
+            total = domain_total[domain]
+            broken = domain_broken.get(domain, 0)
+            pct = f"{broken / total * 100:.0f}%" if total else "—"
+
+            if broken == 0:
+                broken_style = "green"
+            elif broken / total >= 0.5:
+                broken_style = "bold red"
+            else:
+                broken_style = "yellow"
+
+            top_status = ""
+            if domain_statuses[domain]:
+                top_status = domain_statuses[domain].most_common(1)[0][0]
+
+            t.add_row(
+                domain,
+                str(total),
+                Text(str(broken), style=broken_style) if _RICH else str(broken),
+                Text(pct, style=broken_style) if _RICH else pct,
+                top_status,
+            )
+
+        console.print(t)
+    else:
+        print("\n--- Domain Health Summary ---")
+        print(f"{'Domain':<40} {'Total':>6} {'Broken':>6} {'%':>7} {'Status'}")
+        for domain in domains:
+            total = domain_total[domain]
+            broken = domain_broken.get(domain, 0)
+            pct = f"{broken / total * 100:.0f}%" if total else "—"
+            top = domain_statuses[domain].most_common(1)[0][0] if domain_statuses[domain] else ""
+            print(f"{domain:<40} {total:>6} {broken:>6} {pct:>7} {top}")
+
+
 def write_report(
     results: list[CheckResult],
     root: Path,

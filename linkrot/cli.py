@@ -47,7 +47,13 @@ examples:
   linkrot . --watch 60             # re-check every 60s, show diff
 """,
     )
-    p.add_argument("path", nargs="?", default=".", help="Directory to scan (default: .)")
+    p.add_argument(
+        "paths",
+        nargs="*",
+        default=["."],
+        metavar="PATH",
+        help="Directories to scan (default: current directory). Multiple paths are merged.",
+    )
     p.add_argument(
         "--no-external",
         action="store_true",
@@ -146,6 +152,18 @@ examples:
         help="Re-run every SECS seconds and show diff of newly broken/fixed links (0 = disabled)",
     )
     p.add_argument(
+        "--domain-summary",
+        action="store_true",
+        default=cfg.get("domain_summary", False),
+        help="After the report, show a per-domain health breakdown table",
+    )
+    p.add_argument(
+        "--log-file",
+        metavar="FILE",
+        default=cfg.get("log_file", None),
+        help="Append each result as a JSON line to FILE (newline-delimited JSON / JSONL)",
+    )
+    p.add_argument(
         "--sitemap",
         action="store_true",
         default=cfg.get("sitemap", False),
@@ -231,12 +249,15 @@ def _print_redirects(console: "Console", results: list) -> None:
 
 def _one_pass_rich(
     args: argparse.Namespace,
-    root: Path,
+    roots: list[Path],
     console: "Console",
     prev_broken: set[str] | None = None,
 ) -> tuple[int, list, float, float]:
     """Run one scan+check pass and return (exit_code, results, scan_elapsed, check_elapsed)."""
     import time
+
+    # Use first root as the display root; fall back to CWD for multi-root
+    root = roots[0] if len(roots) == 1 else Path.cwd()
 
     t0 = time.perf_counter()
     with Progress(
@@ -246,13 +267,34 @@ def _one_pass_rich(
         transient=True,
     ) as progress:
         task = progress.add_task("Scanning files…", total=None)
-        scan = scan_directory(root)
+        all_links = []
+        files_scanned = 0
+        for scan_root in roots:
+            scan = scan_directory(scan_root)
+            all_links.extend(scan.links)
+            files_scanned += scan.files_scanned
+
+        # Deduplicate external URLs across roots to avoid double-checking
+        seen_external: set[str] = set()
+        deduped_links = []
+        for link in all_links:
+            if link.is_external:
+                if link.url in seen_external:
+                    continue
+                seen_external.add(link.url)
+            deduped_links.append(link)
+
+        # Reuse the scan container shape but with merged links
+        from .scanner import ScanResult
+        scan = ScanResult(links=deduped_links, files_scanned=files_scanned)
         progress.remove_task(task)
     scan_elapsed = time.perf_counter() - t0
 
     if args.sitemap:
         from .sitemap import discover_sitemaps
-        sitemap_links = discover_sitemaps(root)
+        sitemap_links = []
+        for scan_root in roots:
+            sitemap_links.extend(discover_sitemaps(scan_root))
         if sitemap_links:
             scan.links.extend(sitemap_links)
             console.print(
@@ -343,6 +385,19 @@ def _one_pass_rich(
     if prev_broken is not None:
         _print_watch_diff(console, results, prev_broken)
 
+    if args.domain_summary:
+        from .reporter import report_domain_summary
+        console.print()
+        report_domain_summary(results, console=console)
+
+    if args.log_file:
+        from .audit import write_audit_log
+        n = write_audit_log(results, Path(args.log_file), root)
+        console.print(
+            f"[dim]Audit log: {n} record{'s' if n != 1 else ''} appended to {args.log_file}[/dim]",
+            highlight=False,
+        )
+
     if args.suggest:
         from .suggest import suggest_fixes
         suggest_fixes(results)
@@ -373,9 +428,15 @@ def _print_watch_diff(console: "Console", results: list, prev_broken: set[str]) 
         console.print(f"  [bold green]✓ NOW FIXED:[/bold green]  {url}")
 
 
-def _run_with_rich(args: argparse.Namespace, root: Path) -> int:
+def _run_with_rich(args: argparse.Namespace, roots: list[Path]) -> int:
     import time
     console = Console(stderr=True)
+
+    if len(roots) > 1:
+        console.print(
+            f"[dim]Scanning {len(roots)} paths: {', '.join(str(r) for r in roots)}[/dim]",
+            highlight=False,
+        )
 
     if args.watch:
         prev_broken: set[str] | None = None
@@ -383,7 +444,7 @@ def _run_with_rich(args: argparse.Namespace, root: Path) -> int:
         while True:
             if iteration > 0:
                 console.clear()
-            exit_code, results, _, _ = _one_pass_rich(args, root, console, prev_broken)
+            exit_code, results, _, _ = _one_pass_rich(args, roots, console, prev_broken)
             prev_broken = {r.link.url for r in results if not r.ok}
             console.print(
                 f"[dim]  ↻ watch mode — refreshing in {args.watch}s (Ctrl-C to stop)[/dim]"
@@ -395,11 +456,11 @@ def _run_with_rich(args: argparse.Namespace, root: Path) -> int:
             iteration += 1
         return 0
 
-    exit_code, _, _, _ = _one_pass_rich(args, root, console, prev_broken=None)
+    exit_code, _, _, _ = _one_pass_rich(args, roots, console, prev_broken=None)
     return exit_code
 
 
-def _run_plain(args: argparse.Namespace, root: Path) -> int:
+def _run_plain(args: argparse.Namespace, roots: list[Path]) -> int:
     import threading
     import time
 
@@ -414,13 +475,32 @@ def _run_plain(args: argparse.Namespace, root: Path) -> int:
             time.sleep(0.1)
         print("\r" + " " * (len(message) + 4) + "\r", end="", flush=True)
 
+    root = roots[0] if len(roots) == 1 else Path.cwd()
+
     if is_tty:
         stop = threading.Event()
         t = threading.Thread(target=_spinner, args=(stop, "Scanning files…"), daemon=True)
         t.start()
 
     t0 = time.perf_counter()
-    scan = scan_directory(root)
+    all_links = []
+    files_scanned = 0
+    for scan_root in roots:
+        s = scan_directory(scan_root)
+        all_links.extend(s.links)
+        files_scanned += s.files_scanned
+
+    seen_external: set[str] = set()
+    deduped = []
+    for link in all_links:
+        if link.is_external:
+            if link.url in seen_external:
+                continue
+            seen_external.add(link.url)
+        deduped.append(link)
+
+    from .scanner import ScanResult
+    scan = ScanResult(links=deduped, files_scanned=files_scanned)
     scan_elapsed = time.perf_counter() - t0
 
     if is_tty:
@@ -429,7 +509,9 @@ def _run_plain(args: argparse.Namespace, root: Path) -> int:
 
     if args.sitemap:
         from .sitemap import discover_sitemaps
-        sitemap_links = discover_sitemaps(root)
+        sitemap_links = []
+        for scan_root in roots:
+            sitemap_links.extend(discover_sitemaps(scan_root))
         if sitemap_links:
             scan.links.extend(sitemap_links)
             if is_tty:
@@ -493,6 +575,16 @@ def _run_plain(args: argparse.Namespace, root: Path) -> int:
         if is_tty:
             print(f"Baseline saved to {args.save_baseline}")
 
+    if args.domain_summary:
+        from .reporter import report_domain_summary
+        report_domain_summary(results, console=None)
+
+    if args.log_file:
+        from .audit import write_audit_log
+        n = write_audit_log(results, Path(args.log_file), root)
+        if is_tty:
+            print(f"Audit log: {n} record{'s' if n != 1 else ''} appended to {args.log_file}")
+
     if args.suggest:
         from .suggest import suggest_fixes
         suggest_fixes(results)
@@ -524,17 +616,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"linkrot: cleared {n} cached result{'s' if n != 1 else ''}.")
         return 0
 
-    root = Path(args.path).resolve()
-    if not root.exists():
-        print(f"linkrot: path not found: {root}", file=sys.stderr)
-        return 2
-    if not root.is_dir():
-        print(f"linkrot: not a directory: {root}", file=sys.stderr)
-        return 2
+    roots: list[Path] = []
+    for raw in (args.paths or ["."]):
+        p = Path(raw).resolve()
+        if not p.exists():
+            print(f"linkrot: path not found: {p}", file=sys.stderr)
+            return 2
+        if not p.is_dir():
+            print(f"linkrot: not a directory: {p}", file=sys.stderr)
+            return 2
+        roots.append(p)
+
+    if not roots:
+        roots = [Path(".").resolve()]
 
     if _RICH and sys.stderr.isatty():
-        return _run_with_rich(args, root)
-    return _run_plain(args, root)
+        return _run_with_rich(args, roots)
+    return _run_plain(args, roots)
 
 
 def entry_point() -> None:

@@ -4,6 +4,55 @@
 
 ---
 
+## What's New in v1.7.0
+
+### 1. Domain Health Summary (`--domain-summary`)
+
+After the regular report, print a per-domain breakdown of external link health: total checked, broken count, failure rate, and the most common failure status. Sorted worst-first so you can see which third-party domains are rotting fastest.
+
+```bash
+linkrot . --domain-summary
+```
+
+```
+╭─────────────────────────────────────────────────────────────────────────╮
+│ Domain Health Summary                                                   │
+├──────────────────────────┬───────┬────────┬──────────┬─────────────────┤
+│ Domain                   │ Total │ Broken │ % Broken │ Top Status      │
+├──────────────────────────┼───────┼────────┼──────────┼─────────────────┤
+│ docs.old-vendor.com      │    12 │      8 │      67% │ timeout         │
+│ api.deprecated.io        │     5 │      3 │      60% │ http-404        │
+│ github.com               │    40 │      1 │       3% │ http-404        │
+│ example.com              │     3 │      0 │       0% │                 │
+╰──────────────────────────┴───────┴────────┴──────────┴─────────────────╯
+```
+
+### 2. JSONL Audit Log (`--log-file FILE`)
+
+Append every check result as a newline-delimited JSON record to a file. Each record includes timestamp, file, line, URL, ok/broken status, HTTP status, and redirect destination. Pipe to `jq`, ingest into ELK, or track over time in CI.
+
+```bash
+linkrot . --log-file linkrot-audit.jsonl
+```
+
+Each line:
+```json
+{"ts": "2026-05-13T10:00:00Z", "file": "docs/guide.md", "line": 42, "url": "https://example.com/old", "ok": false, "status": "http-404", "detail": "", "is_external": true, "final_url": ""}
+```
+
+Run it in CI and `tail -f linkrot-audit.jsonl | jq 'select(.ok == false)'` to stream new failures.
+
+### 3. Multi-Path Scanning
+
+Pass multiple directories to scan them all in a single run. External URLs are deduplicated so each one is only checked once regardless of how many files reference it.
+
+```bash
+linkrot docs/ src/ README.md/..   # scan multiple roots
+linkrot . tests/ --format json    # merge results across paths
+```
+
+---
+
 ## What's New in v1.6.0
 
 ### 1. SARIF output format (`--format sarif`)
