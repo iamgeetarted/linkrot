@@ -62,7 +62,7 @@ examples:
     )
     p.add_argument(
         "--format", "-f",
-        choices=["table", "json", "csv", "markdown", "github", "sarif"],
+        choices=["table", "json", "csv", "markdown", "github", "sarif", "html"],
         default=cfg.get("format", "table"),
         help="Output format (default: table)",
     )
@@ -180,6 +180,22 @@ examples:
         metavar="FILE",
         default=None,
         help="Load a baseline FILE; only report links that are new breakages not in the baseline",
+    )
+    p.add_argument(
+        "--notify-webhook",
+        metavar="URL",
+        default=cfg.get("notify_webhook", None),
+        help=(
+            "POST a broken-link summary to this webhook URL after the scan. "
+            "Slack incoming-webhook format is used for hooks.slack.com URLs; "
+            "generic JSON otherwise."
+        ),
+    )
+    p.add_argument(
+        "--notify-broken-only",
+        action="store_true",
+        default=cfg.get("notify_broken_only", True),
+        help="Only fire the webhook when broken links are found (default: true)",
     )
     p.add_argument("--version", action="version", version=f"linkrot {__version__}")
     return p
@@ -405,6 +421,21 @@ def _one_pass_rich(
     if args.verbose:
         _print_verbose_summary(console, scan_elapsed, check_elapsed, results, args)
 
+    if args.notify_webhook:
+        from .webhook import notify
+        notify(
+            results,
+            webhook_url=args.notify_webhook,
+            root=root,
+            broken_only=args.notify_broken_only,
+        )
+        broken_n = sum(1 for r in results if not r.ok)
+        if broken_n or not args.notify_broken_only:
+            console.print(
+                f"[dim]Webhook: notification sent to {args.notify_webhook}[/dim]",
+                highlight=False,
+            )
+
     return exit_code, results, scan_elapsed, check_elapsed
 
 
@@ -597,6 +628,18 @@ def _run_plain(args: argparse.Namespace, roots: list[Path]) -> int:
         print(f"[Stats]  checked={len(results)}  broken={broken_count}")
         for status, count in sorted(status_counts.items(), key=lambda x: -x[1]):
             print(f"         {status}: {count}")
+
+    if args.notify_webhook:
+        from .webhook import notify
+        notify(
+            results,
+            webhook_url=args.notify_webhook,
+            root=root,
+            broken_only=args.notify_broken_only,
+        )
+        broken_n = sum(1 for r in results if not r.ok)
+        if is_tty and (broken_n or not args.notify_broken_only):
+            print(f"Webhook: notification sent to {args.notify_webhook}")
 
     return exit_code
 

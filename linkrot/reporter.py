@@ -471,6 +471,179 @@ def report_domain_summary(results: list[CheckResult], console: "Console | None" 
             print(f"{domain:<40} {total:>6} {broken:>6} {pct:>7} {top}")
 
 
+def report_html(results: list[CheckResult], root: Path, show_ok: bool = False) -> str:
+    """Return a self-contained HTML report with sortable, filterable results.
+
+    The report uses inline CSS and vanilla JS — no external dependencies.
+    Broken links are highlighted in red; warnings in amber; passing links
+    appear only when *show_ok* is True.
+    """
+    from html import escape
+    from datetime import datetime, timezone
+
+    def _rel(cr: CheckResult) -> str:
+        try:
+            return str(cr.link.source_file.relative_to(root))
+        except ValueError:
+            return str(cr.link.source_file)
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    total = len(results)
+    broken_count = sum(1 for r in results if not r.ok)
+    ok_count = total - broken_count
+
+    visible = [r for r in results if not r.ok or show_ok]
+
+    rows_html: list[str] = []
+    for cr in sorted(visible, key=lambda r: (str(r.link.source_file), r.link.line_number)):
+        if cr.ok:
+            row_class = "ok"
+            badge_class = "badge-ok"
+            badge_text = cr.status
+        elif cr.status == "anchor-missing":
+            row_class = "warn"
+            badge_class = "badge-warn"
+            badge_text = cr.status
+        elif cr.status == "timeout":
+            row_class = "warn"
+            badge_class = "badge-warn"
+            badge_text = "timeout"
+        else:
+            row_class = "broken"
+            badge_class = "badge-broken"
+            badge_text = cr.status
+
+        url_display = escape(cr.link.url + (f"#{cr.link.anchor}" if cr.link.anchor else ""))
+        if cr.link.is_external:
+            url_cell = f'<a href="{url_display}" target="_blank" rel="noopener">{url_display}</a>'
+        else:
+            url_cell = f'<code>{url_display}</code>'
+
+        detail = escape(cr.detail or "")
+        final_url = escape(cr.final_url or "")
+        if final_url:
+            detail = f'{detail} <span class="redirect">→ {final_url}</span>' if detail else f'<span class="redirect">→ {final_url}</span>'
+
+        rows_html.append(
+            f'<tr class="{row_class}">'
+            f'<td><code>{escape(_rel(cr))}</code></td>'
+            f'<td class="num">{cr.link.line_number}</td>'
+            f'<td>{url_cell}</td>'
+            f'<td><span class="badge {badge_class}">{escape(badge_text)}</span></td>'
+            f'<td>{detail}</td>'
+            f'</tr>'
+        )
+
+    rows_str = "\n".join(rows_html)
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>linkrot report — {escape(str(root))}</title>
+<style>
+  :root {{
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #c9d1d9; --muted: #8b949e;
+    --red: #f85149; --amber: #e3b341; --green: #3fb950;
+    --link: #58a6ff;
+  }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ background: var(--bg); color: var(--text); font: 14px/1.5 "Segoe UI", system-ui, sans-serif; padding: 24px; }}
+  h1 {{ font-size: 1.4rem; margin-bottom: 4px; }}
+  .meta {{ color: var(--muted); font-size: 0.85rem; margin-bottom: 20px; }}
+  .stats {{ display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }}
+  .stat {{ background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 20px; min-width: 100px; text-align: center; }}
+  .stat .num {{ font-size: 1.6rem; font-weight: 700; }}
+  .stat .label {{ font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }}
+  .stat.broken .num {{ color: var(--red); }}
+  .stat.ok .num {{ color: var(--green); }}
+  .controls {{ margin-bottom: 12px; display: flex; gap: 10px; flex-wrap: wrap; }}
+  .controls input {{ background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 12px; font-size: 13px; width: 280px; outline: none; }}
+  .controls input:focus {{ border-color: var(--link); }}
+  .controls select {{ background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 10px; font-size: 13px; cursor: pointer; }}
+  table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+  th {{ background: var(--surface); border-bottom: 2px solid var(--border); padding: 8px 10px; text-align: left; color: var(--muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: .04em; cursor: pointer; user-select: none; white-space: nowrap; }}
+  th:hover {{ color: var(--text); }}
+  td {{ border-bottom: 1px solid var(--border); padding: 7px 10px; vertical-align: top; }}
+  td.num {{ text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }}
+  tr.broken td {{ background: rgba(248,81,73,.05); }}
+  tr.warn td {{ background: rgba(227,179,65,.04); }}
+  tr:hover td {{ background: rgba(255,255,255,.04); }}
+  a {{ color: var(--link); text-decoration: none; }}
+  a:hover {{ text-decoration: underline; }}
+  code {{ font-size: 0.85em; color: #79c0ff; }}
+  .badge {{ display: inline-block; padding: 1px 7px; border-radius: 12px; font-size: 0.78rem; font-weight: 600; }}
+  .badge-broken {{ background: rgba(248,81,73,.2); color: var(--red); }}
+  .badge-warn {{ background: rgba(227,179,65,.2); color: var(--amber); }}
+  .badge-ok {{ background: rgba(63,185,80,.15); color: var(--green); }}
+  .redirect {{ color: var(--amber); font-size: 0.85em; }}
+  .hidden {{ display: none; }}
+  footer {{ margin-top: 24px; color: var(--muted); font-size: 0.78rem; }}
+</style>
+</head>
+<body>
+<h1>linkrot report</h1>
+<p class="meta">Root: <code>{escape(str(root))}</code> &nbsp;·&nbsp; Generated: {ts}</p>
+<div class="stats">
+  <div class="stat"><div class="num">{total}</div><div class="label">Total</div></div>
+  <div class="stat broken"><div class="num">{broken_count}</div><div class="label">Broken</div></div>
+  <div class="stat ok"><div class="num">{ok_count}</div><div class="label">Passing</div></div>
+</div>
+<div class="controls">
+  <input type="text" id="search" placeholder="Filter by URL, file, or status…" oninput="filterRows()">
+  <select id="statusFilter" onchange="filterRows()">
+    <option value="">All statuses</option>
+    <option value="broken">Broken only</option>
+    <option value="warn">Warnings only</option>
+    <option value="ok">Passing only</option>
+  </select>
+</div>
+<table id="resultsTable">
+  <thead>
+    <tr>
+      <th onclick="sortTable(0)">File ↕</th>
+      <th onclick="sortTable(1)">Line ↕</th>
+      <th onclick="sortTable(2)">URL ↕</th>
+      <th onclick="sortTable(3)">Status ↕</th>
+      <th>Detail</th>
+    </tr>
+  </thead>
+  <tbody id="tbody">
+{rows_str}
+  </tbody>
+</table>
+<footer>Generated by <strong>linkrot</strong> · <a href="https://github.com/iamgeetarted/linkrot">github.com/iamgeetarted/linkrot</a></footer>
+<script>
+function filterRows() {{
+  const q = document.getElementById('search').value.toLowerCase();
+  const sf = document.getElementById('statusFilter').value;
+  document.querySelectorAll('#tbody tr').forEach(tr => {{
+    const text = tr.innerText.toLowerCase();
+    const cls = tr.className;
+    const matchText = !q || text.includes(q);
+    const matchStatus = !sf || cls === sf;
+    tr.classList.toggle('hidden', !(matchText && matchStatus));
+  }});
+}}
+let sortDir = {{}};
+function sortTable(col) {{
+  const tbody = document.getElementById('tbody');
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  const dir = sortDir[col] = -(sortDir[col] || 1);
+  rows.sort((a, b) => {{
+    const av = a.cells[col]?.innerText.trim() || '';
+    const bv = b.cells[col]?.innerText.trim() || '';
+    return av.localeCompare(bv, undefined, {{numeric: true}}) * dir;
+  }});
+  rows.forEach(r => tbody.appendChild(r));
+}}
+</script>
+</body>
+</html>"""
+
+
 def write_report(
     results: list[CheckResult],
     root: Path,
@@ -506,6 +679,12 @@ def write_report(
             print(text)
     elif fmt == "sarif":
         text = report_sarif(results, root)
+        if output_file:
+            Path(output_file).write_text(text, encoding="utf-8")
+        else:
+            print(text)
+    elif fmt == "html":
+        text = report_html(results, root, show_ok=show_ok)
         if output_file:
             Path(output_file).write_text(text, encoding="utf-8")
         else:

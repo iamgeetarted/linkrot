@@ -4,6 +4,77 @@
 
 ---
 
+## What's New in v1.8.0
+
+### 1. Interactive HTML Report (`--format html`)
+
+Generate a self-contained, dark-themed HTML report with **sortable columns**, **live search filtering**, and **status-based filtering**. No external dependencies — everything is inline CSS and vanilla JS. Works perfectly as a CI artifact or email attachment.
+
+```bash
+linkrot . --format html -o report.html
+```
+
+Features:
+- Dark GitHub-style theme with color-coded rows (red = broken, amber = warnings)
+- Click any column header to sort ascending/descending
+- Search box filters by URL, file path, or status in real-time
+- Status filter dropdown (All / Broken only / Warnings only / Passing only)
+- Broken link count badge in the browser tab title
+
+### 2. Webhook Notifications (`--notify-webhook URL`)
+
+After the scan, POST a summary to any HTTP endpoint. Automatically uses **Slack Block Kit** format for `hooks.slack.com` URLs; sends a generic JSON payload for everything else. Only fires when broken links are found by default.
+
+```bash
+# Slack
+linkrot . --notify-webhook https://hooks.slack.com/services/T.../B.../xxx
+
+# Custom endpoint / Discord / Teams
+linkrot . --notify-webhook https://my-ci-server.internal/linkrot-hook
+
+# Always notify, even when all links pass
+linkrot . --notify-webhook https://... --no-notify-broken-only
+```
+
+Slack message example:
+```
+🚨 linkrot scan complete — 3 broken / 41 passing / 44 total
+• https://old-docs.example.com/api — http-404 in docs/api.md:12
+• https://deprecated-pkg.io — timeout in README.md:88
+• ./setup.md#quick-start — anchor-missing in docs/install.md:5
+```
+
+Set `notify_webhook` in `.linkrot.toml` to fire on every CI run without repeating the flag.
+
+### 3. Full Config File Coverage
+
+`.linkrot.toml` now supports **all** CLI flags, not just the original six. Every flag added since v1.2 can be persisted as a default:
+
+```toml
+# .linkrot.toml — full v1.8 key set
+timeout          = 15.0
+workers          = 30
+format           = "html"
+show_ok          = false
+no_external      = false
+ignore           = ["localhost", "127\\.0\\.0\\.1"]
+cache_ttl        = 48.0
+no_cache         = false
+suggest          = false
+verbose          = false
+retries          = 3
+retry_backoff    = 1.5
+show_redirects   = true
+watch            = 0
+sitemap          = false
+domain_summary   = true
+log_file         = "linkrot-audit.jsonl"
+notify_webhook   = "https://hooks.slack.com/services/..."
+notify_broken_only = true
+```
+
+---
+
 ## What's New in v1.7.0
 
 ### 1. Domain Health Summary (`--domain-summary`)
