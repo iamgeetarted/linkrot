@@ -197,6 +197,30 @@ examples:
         default=cfg.get("notify_broken_only", True),
         help="Only fire the webhook when broken links are found (default: true)",
     )
+    p.add_argument(
+        "--wayback",
+        action="store_true",
+        default=cfg.get("wayback", False),
+        help=(
+            "After the scan, query the Wayback Machine CDX API for archived snapshots "
+            "of broken external URLs (404 / error) and print replacement suggestions"
+        ),
+    )
+    p.add_argument(
+        "--fix",
+        action="store_true",
+        default=False,
+        help=(
+            "After the scan, interactively walk each broken link and let you type a "
+            "replacement URL — changes are written back to the source file in-place"
+        ),
+    )
+    p.add_argument(
+        "--file-report",
+        action="store_true",
+        default=cfg.get("file_report", False),
+        help="After the report, print a per-file link health table sorted by most broken first",
+    )
     p.add_argument("--version", action="version", version=f"linkrot {__version__}")
     return p
 
@@ -436,6 +460,21 @@ def _one_pass_rich(
                 highlight=False,
             )
 
+    if args.file_report:
+        from .reporter import report_file_health
+        console.print()
+        report_file_health(results, root, console=console)
+
+    if args.wayback:
+        from .wayback import enrich_with_wayback, print_wayback_report
+        console.print("[dim]Querying Wayback Machine for broken URLs…[/dim]", highlight=False)
+        snapshots = enrich_with_wayback(results)
+        print_wayback_report(results, snapshots)
+
+    if args.fix:
+        from .fixer import interactive_fix
+        interactive_fix(results, root)
+
     return exit_code, results, scan_elapsed, check_elapsed
 
 
@@ -640,6 +679,21 @@ def _run_plain(args: argparse.Namespace, roots: list[Path]) -> int:
         broken_n = sum(1 for r in results if not r.ok)
         if is_tty and (broken_n or not args.notify_broken_only):
             print(f"Webhook: notification sent to {args.notify_webhook}")
+
+    if args.file_report:
+        from .reporter import report_file_health
+        report_file_health(results, root, console=None)
+
+    if args.wayback:
+        from .wayback import enrich_with_wayback, print_wayback_report
+        if is_tty:
+            print("Querying Wayback Machine for broken URLs…")
+        snapshots = enrich_with_wayback(results)
+        print_wayback_report(results, snapshots)
+
+    if args.fix:
+        from .fixer import interactive_fix
+        interactive_fix(results, root)
 
     return exit_code
 

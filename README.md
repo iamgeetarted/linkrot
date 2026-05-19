@@ -4,6 +4,77 @@
 
 ---
 
+## What's New in v1.9.0
+
+### 1. Wayback Machine Fallback (`--wayback`)
+
+For every broken external URL with a 404 or connection error, linkrot now queries the **Wayback Machine CDX API** and surfaces the most recent archived snapshot. No API key required. Results appear as a Rich table alongside the main report, giving you instant replacement candidates without leaving the terminal.
+
+```bash
+linkrot docs/ --wayback
+```
+
+```
+────────────────── Wayback Machine Snapshots ──────────────────────
+╭──────────────────────────────────────┬───────────────────────────────────────────╮
+│ Broken URL                           │ Archived Snapshot                         │
+├──────────────────────────────────────┼───────────────────────────────────────────┤
+│ https://old-docs.example.com/api     │ https://web.archive.org/web/20240312.../  │
+│ https://deprecated-lib.io/guide      │ https://web.archive.org/web/20231108.../  │
+╰──────────────────────────────────────┴───────────────────────────────────────────╯
+  2 snapshots found · 1 not archived
+```
+
+### 2. Interactive Fix Mode (`--fix`)
+
+After the scan, walk through each broken link interactively. Type a replacement URL and linkrot rewrites it in the source file — Markdown `[text](url)`, HTML `href/src`, and bare URLs are all handled correctly. Press Enter to skip or `q` to quit early.
+
+```bash
+linkrot docs/ --fix
+```
+
+```
+───────────── Broken link 1/3 ──────────────────────
+  URL:    https://old-api.example.com/v1/reference
+  Status: http-404  HTTP 404
+  File:   docs/api.md  (line 42)
+
+  Replacement URL (blank=skip, q=quit): https://api.example.com/v2/reference
+  ✓ Fixed → https://api.example.com/v2/reference
+
+───────────── Broken link 2/3 ──────────────────────
+  URL:    ./setup.md#quick-start
+  Status: anchor-missing  Anchor '#quick-start' not found
+  File:   README.md  (line 7)
+
+  Replacement URL (blank=skip, q=quit):   ← (Enter to skip)
+
+Fixed 1 / 3 broken link(s).
+```
+
+Combine with `--wayback` to look up snapshots first, then fix with the archive URL in hand.
+
+### 3. Per-File Health Report (`--file-report`)
+
+Append a per-file breakdown to any scan. Files are sorted by most broken links first — instantly shows which docs need the most attention.
+
+```bash
+linkrot . --file-report
+```
+
+```
+╭─────────────────────────────────────┬───────┬────────┬────┬────────╮
+│ File                                │ Total │ Broken │ OK │ Health │
+├─────────────────────────────────────┼───────┼────────┼────┼────────┤
+│ docs/legacy-migration.md            │    18 │      6 │ 12 │    67% │
+│ docs/api-reference.md               │    31 │      3 │ 28 │    90% │
+│ README.md                           │    12 │      1 │ 11 │    92% │
+│ docs/quickstart.md                  │     8 │      0 │  8 │   100% │
+╰─────────────────────────────────────┴───────┴────────┴────┴────────╯
+```
+
+---
+
 ## What's New in v1.8.0
 
 ### 1. Interactive HTML Report (`--format html`)

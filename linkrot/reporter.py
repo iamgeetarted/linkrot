@@ -644,6 +644,85 @@ function sortTable(col) {{
 </html>"""
 
 
+def report_file_health(results: list[CheckResult], root: Path, console: "Console | None" = None) -> None:
+    """Print a per-file health table sorted by most broken links first.
+
+    Each row shows total links, broken count, passing count, and a health
+    percentage so maintainers can quickly identify the most problematic files.
+    """
+    from collections import defaultdict
+
+    file_total: dict[str, int] = defaultdict(int)
+    file_broken: dict[str, int] = defaultdict(int)
+
+    for cr in results:
+        try:
+            rel = str(cr.link.source_file.relative_to(root))
+        except ValueError:
+            rel = str(cr.link.source_file)
+        file_total[rel] += 1
+        if not cr.ok:
+            file_broken[rel] += 1
+
+    if not file_total:
+        return
+
+    files = sorted(file_total.keys(), key=lambda f: (-file_broken.get(f, 0), f))
+
+    if _RICH:
+        if console is None:
+            console = Console(highlight=False)
+
+        t = Table(
+            box=rich_box.ROUNDED,
+            show_header=True,
+            header_style="bold cyan",
+            border_style="cyan",
+            title="[bold]Per-File Link Health[/bold]",
+        )
+        t.add_column("File", style="cyan", no_wrap=True)
+        t.add_column("Total", justify="right", style="dim")
+        t.add_column("Broken", justify="right")
+        t.add_column("OK", justify="right", style="dim green")
+        t.add_column("Health", justify="right")
+
+        for rel in files:
+            total = file_total[rel]
+            broken = file_broken.get(rel, 0)
+            ok = total - broken
+            health_pct = (ok / total * 100) if total else 100.0
+            health_str = f"{health_pct:.0f}%"
+
+            if broken == 0:
+                broken_style = "green"
+                health_style = "bold green"
+            elif health_pct < 50:
+                broken_style = "bold red"
+                health_style = "bold red"
+            else:
+                broken_style = "yellow"
+                health_style = "yellow"
+
+            t.add_row(
+                rel,
+                str(total),
+                Text(str(broken), style=broken_style),
+                str(ok),
+                Text(health_str, style=health_style),
+            )
+
+        console.print(t)
+    else:
+        print("\n--- Per-File Link Health ---")
+        print(f"{'File':<55} {'Total':>6} {'Broken':>7} {'OK':>5} {'Health':>7}")
+        for rel in files:
+            total = file_total[rel]
+            broken = file_broken.get(rel, 0)
+            ok = total - broken
+            pct = f"{(ok / total * 100):.0f}%" if total else "100%"
+            print(f"{rel:<55} {total:>6} {broken:>7} {ok:>5} {pct:>7}")
+
+
 def write_report(
     results: list[CheckResult],
     root: Path,
