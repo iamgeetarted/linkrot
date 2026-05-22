@@ -4,6 +4,67 @@
 
 ---
 
+## What's New in v2.0
+
+### 1. Per-Domain Rate Limiting (`--domain-concurrency N`)
+
+Prevent hammering individual hosts by capping concurrent requests per domain. Each domain gets its own `asyncio.Semaphore` with a configurable limit, applied on top of the global `--workers` cap.
+
+```bash
+linkrot docs/ --domain-concurrency 2   # max 2 simultaneous requests to any one domain
+linkrot docs/ --domain-concurrency 5   # more aggressive (default: 3)
+```
+
+This stops linkrot from overwhelming rate-limited hosts like GitHub or internal wikis while still running the overall check concurrently across many domains.
+
+### 2. Impact Scoring (`--impact-report`)
+
+After the main report, show a table of broken URLs ranked by how many distinct files reference them. Instantly surfaces the highest-priority fixes — a broken URL referenced in 10 files is far more urgent than one referenced in 1.
+
+```bash
+linkrot . --impact-report
+```
+
+```
+╭────────────────────────────────────────────────┬──────────┬───────────────┬────────╮
+│ URL                                            │ Status   │ Files Affected│ Impact │
+├────────────────────────────────────────────────┼──────────┼───────────────┼────────┤
+│ https://old-api.example.com/reference          │ http-404 │             5 │  HIGH  │
+│ https://deprecated-pkg.io/install              │ timeout  │             2 │ MEDIUM │
+│ ./setup.md                                     │ missing  │             1 │   LOW  │
+╰────────────────────────────────────────────────┴──────────┴───────────────┴────────╯
+```
+
+Impact levels: **HIGH** (≥3 files), **MEDIUM** (2 files), **LOW** (1 file).
+
+### 3. AI Triage (`--triage`)
+
+After the scan, stream a Claude Haiku analysis that categorizes broken links by failure type (missing file, HTTP 404, HTTP 5xx, timeout, other), prioritizes which to fix first, suggests a concrete fix strategy per category, and estimates relative effort.
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+linkrot docs/ --triage
+```
+
+```
+────────────────────── AI Triage Report ──────────────────────
+1. HTTP 404 (Not Found) — HIGH priority, Medium effort
+   These URLs have moved or been removed. Check redirects or search for updated docs.
+   Strategy: grep source files for the domain, update links in bulk with sed/find.
+
+2. Timeouts — MEDIUM priority, Low effort
+   Likely flaky hosts or overly strict firewall rules in CI.
+   Strategy: re-run with --retries 3 --retry-backoff 2.0; suppress persistent offenders with --ignore.
+
+3. Missing internal files — HIGH priority, Low effort
+   Files renamed or deleted without updating references.
+   Strategy: run with --no-external first to fix internal links quickly, then tackle external.
+```
+
+Requires `ANTHROPIC_API_KEY` in your environment.
+
+---
+
 ## What's New in v1.9.0
 
 ### 1. Wayback Machine Fallback (`--wayback`)

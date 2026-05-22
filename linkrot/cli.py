@@ -221,6 +221,25 @@ examples:
         default=cfg.get("file_report", False),
         help="After the report, print a per-file link health table sorted by most broken first",
     )
+    p.add_argument(
+        "--domain-concurrency",
+        type=int,
+        default=cfg.get("domain_concurrency", 3),
+        metavar="N",
+        help="Max concurrent requests per domain (default: 3)",
+    )
+    p.add_argument(
+        "--impact-report",
+        action="store_true",
+        default=cfg.get("impact_report", False),
+        help="After the report, show broken URLs ranked by how many files reference them",
+    )
+    p.add_argument(
+        "--triage",
+        action="store_true",
+        default=cfg.get("triage", False),
+        help="After the report, stream an AI triage analysis of broken links (requires ANTHROPIC_API_KEY)",
+    )
     p.add_argument("--version", action="version", version=f"linkrot {__version__}")
     return p
 
@@ -381,6 +400,7 @@ def _one_pass_rich(
             no_cache=args.no_cache,
             retries=args.retries,
             retry_backoff=args.retry_backoff,
+            domain_concurrency=args.domain_concurrency,
         )
         check_elapsed = time.perf_counter() - t1
 
@@ -464,6 +484,15 @@ def _one_pass_rich(
         from .reporter import report_file_health
         console.print()
         report_file_health(results, root, console=console)
+
+    if args.impact_report:
+        from .reporter import report_impact_summary
+        console.print()
+        report_impact_summary(results, root, console=console)
+
+    if args.triage:
+        from .triage import triage_broken_links
+        triage_broken_links(results)
 
     if args.wayback:
         from .wayback import enrich_with_wayback, print_wayback_report
@@ -611,6 +640,7 @@ def _run_plain(args: argparse.Namespace, roots: list[Path]) -> int:
         no_cache=args.no_cache,
         retries=args.retries,
         retry_backoff=args.retry_backoff,
+        domain_concurrency=args.domain_concurrency,
     )
     check_elapsed = time.perf_counter() - t1
 
@@ -683,6 +713,14 @@ def _run_plain(args: argparse.Namespace, roots: list[Path]) -> int:
     if args.file_report:
         from .reporter import report_file_health
         report_file_health(results, root, console=None)
+
+    if args.impact_report:
+        from .reporter import report_impact_summary
+        report_impact_summary(results, root, console=None)
+
+    if args.triage:
+        from .triage import triage_broken_links
+        triage_broken_links(results)
 
     if args.wayback:
         from .wayback import enrich_with_wayback, print_wayback_report

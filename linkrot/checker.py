@@ -163,8 +163,15 @@ async def _fetch_all_external(
     total: int,
     retries: int = 2,
     retry_backoff: float = 1.0,
+    domain_concurrency: int = 3,
 ) -> list[CheckResult]:
+    from urllib.parse import urlparse
+    from collections import defaultdict
+
     semaphore = asyncio.Semaphore(max_workers)
+    domain_semaphores: dict[str, asyncio.Semaphore] = defaultdict(
+        lambda: asyncio.Semaphore(domain_concurrency)
+    )
     counter = [start_done]
     lock = asyncio.Lock()
 
@@ -185,11 +192,13 @@ async def _fetch_all_external(
                             progress_cb(counter[0], total)
                     return CheckResult(link, cached.ok, cached.status, cached.detail)
 
+            domain = urlparse(link.url).netloc
             async with semaphore:
-                ok, status, detail, final_url = await _check_one_url(
-                    link.url, client, timeout,
-                    retries=retries, retry_backoff=retry_backoff,
-                )
+                async with domain_semaphores[domain]:
+                    ok, status, detail, final_url = await _check_one_url(
+                        link.url, client, timeout,
+                        retries=retries, retry_backoff=retry_backoff,
+                    )
 
             if cache_ttl is not None:
                 set_cached(link.url, ok, status, detail)
@@ -220,6 +229,7 @@ def check_links(
     no_cache: bool = False,
     retries: int = 2,
     retry_backoff: float = 1.0,
+    domain_concurrency: int = 3,
 ) -> list[CheckResult]:
     """Check all links; returns a list of CheckResult."""
     ignore_res = [re.compile(p) for p in (ignore_patterns or [])]
@@ -264,6 +274,7 @@ def check_links(
                 total=total,
                 retries=retries,
                 retry_backoff=retry_backoff,
+                domain_concurrency=domain_concurrency,
             )
         )
         for cr in ext_results:

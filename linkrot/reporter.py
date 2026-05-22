@@ -723,6 +723,75 @@ def report_file_health(results: list[CheckResult], root: Path, console: "Console
             print(f"{rel:<55} {total:>6} {broken:>7} {ok:>5} {pct:>7}")
 
 
+def report_impact_summary(
+    results: list[CheckResult],
+    root: Path,
+    console: "Console | None" = None,
+) -> None:
+    """Print a table of broken URLs sorted by how many distinct files reference them."""
+    from collections import defaultdict
+
+    broken = [r for r in results if not r.ok]
+    if not broken:
+        return
+
+    url_files: dict[str, set[str]] = defaultdict(set)
+    url_status: dict[str, str] = {}
+    for r in broken:
+        try:
+            rel = str(r.link.source_file.relative_to(root))
+        except ValueError:
+            rel = str(r.link.source_file)
+        url = r.link.url
+        url_files[url].add(rel)
+        url_status[url] = r.status
+
+    rows = sorted(url_files.items(), key=lambda x: -len(x[1]))
+
+    def _impact_label(count: int) -> str:
+        if count >= 3:
+            return "HIGH"
+        if count == 2:
+            return "MEDIUM"
+        return "LOW"
+
+    if _RICH:
+        if console is None:
+            console = Console(highlight=False)
+
+        t = Table(
+            box=rich_box.ROUNDED,
+            show_header=True,
+            header_style="bold cyan",
+            border_style="cyan",
+            title="[bold]Broken Link Impact Summary[/bold]",
+        )
+        t.add_column("URL", no_wrap=False)
+        t.add_column("Status", style="dim", no_wrap=True)
+        t.add_column("Files Affected", justify="right")
+        t.add_column("Impact", justify="center")
+
+        for url, files in rows:
+            count = len(files)
+            label = _impact_label(count)
+            if label == "HIGH":
+                impact_text = Text(label, style="bold red")
+            elif label == "MEDIUM":
+                impact_text = Text(label, style="bold yellow")
+            else:
+                impact_text = Text(label, style="dim")
+            t.add_row(url, url_status[url], str(count), impact_text)
+
+        console.print(t)
+    else:
+        print("\n--- Broken Link Impact Summary ---")
+        print(f"{'URL':<60} {'Status':<12} {'Files':>6} {'Impact'}")
+        for url, files in rows:
+            count = len(files)
+            label = _impact_label(count)
+            print(f"{url:<60} {url_status[url]:<12} {count:>6} {label}")
+
+
 def write_report(
     results: list[CheckResult],
     root: Path,
