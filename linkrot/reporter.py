@@ -792,6 +792,77 @@ def report_impact_summary(
             print(f"{url:<60} {url_status[url]:<12} {count:>6} {label}")
 
 
+def report_rate_limit_summary(
+    results: "list[CheckResult]",
+    root: Path,
+    console: "Console | None" = None,
+) -> None:
+    """Print a summary of domains that returned HTTP 429 (rate-limited).
+
+    These results may be false negatives — the links could be valid but the
+    checker was throttled by the server.
+
+    Args:
+        results: All check results from the scan.
+        root: Root directory (unused, kept for API consistency).
+        console: Rich Console to print to; creates one if omitted.
+    """
+    from urllib.parse import urlparse
+    from collections import defaultdict
+
+    rate_limited = [r for r in results if r.status == "http-429"]
+    if not rate_limited:
+        return
+
+    domain_count: dict[str, int] = defaultdict(int)
+    domain_sample: dict[str, str] = {}
+
+    for r in rate_limited:
+        try:
+            domain = urlparse(r.link.url).netloc or r.link.url
+        except Exception:
+            domain = r.link.url
+        domain_count[domain] += 1
+        if domain not in domain_sample:
+            domain_sample[domain] = r.link.url
+
+    domains = sorted(domain_count.keys(), key=lambda d: (-domain_count[d], d))
+
+    note = (
+        "These may be false negatives — links appear broken due to rate limits, "
+        "not actual link rot."
+    )
+
+    if _RICH:
+        from rich.panel import Panel
+
+        if console is None:
+            console = Console(highlight=False)
+
+        t = Table(
+            box=rich_box.ROUNDED,
+            show_header=True,
+            header_style="bold cyan",
+            border_style="yellow",
+            title="[bold yellow]Rate-Limited Domains[/bold yellow]",
+        )
+        t.add_column("Domain", style="cyan", no_wrap=True)
+        t.add_column("Count", justify="right", style="yellow")
+        t.add_column("Sample URL", no_wrap=False)
+
+        for domain in domains:
+            t.add_row(domain, str(domain_count[domain]), domain_sample[domain])
+
+        console.print(t)
+        console.print(f"[dim]{note}[/dim]")
+    else:
+        print("\n--- Rate-Limited Domains ---")
+        print(f"{'Domain':<40} {'Count':>6}  {'Sample URL'}")
+        for domain in domains:
+            print(f"{domain:<40} {domain_count[domain]:>6}  {domain_sample[domain]}")
+        print(f"\nNote: {note}")
+
+
 def write_report(
     results: list[CheckResult],
     root: Path,

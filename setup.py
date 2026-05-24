@@ -5,7 +5,7 @@ long_description = (Path(__file__).parent / "README.md").read_text(encoding="utf
 
 setup(
     name="linkrot",
-    version="1.0.0",
+    version="2.1.0",
     author="iamgeetarted",
     author_email="marktimothydorsey@gmail.com",
     description="Find broken links in Markdown and HTML files",

@@ -4,6 +4,30 @@
 
 ---
 
+## What's New in v2.1.0
+
+### Priority Fix Queue (`--priority-sort`)
+Ranks broken links by a composite priority score (severity × impact) so you fix the most important issues first:
+```bash
+linkrot . --priority-sort
+```
+Output shows each broken link's priority score, how many files reference it, and the error type.
+
+### GitHub Actions CI Summary (`--ci-summary`)  
+When running in GitHub Actions, write a Markdown step summary to `$GITHUB_STEP_SUMMARY`:
+```bash
+linkrot . --ci-summary
+```
+Shows a formatted broken-link table directly in your Actions workflow summary.
+
+### Rate-Limit Report (`--rate-limit-report`)
+Identifies domains that rate-limited (HTTP 429) your checker — these may be false negatives, not real link rot:
+```bash
+linkrot . --rate-limit-report
+```
+
+---
+
 ## What's New in v2.0
 
 ### 1. Per-Domain Rate Limiting (`--domain-concurrency N`)

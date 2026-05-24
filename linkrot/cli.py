@@ -240,6 +240,24 @@ examples:
         default=cfg.get("triage", False),
         help="After the report, stream an AI triage analysis of broken links (requires ANTHROPIC_API_KEY)",
     )
+    p.add_argument(
+        "--priority-sort",
+        action="store_true",
+        default=cfg.get("priority_sort", False),
+        help="After the report, print a priority-scored fix queue ranking broken links by severity × impact",
+    )
+    p.add_argument(
+        "--ci-summary",
+        action="store_true",
+        default=cfg.get("ci_summary", False),
+        help="Write a Markdown broken-link table to $GITHUB_STEP_SUMMARY when running in GitHub Actions",
+    )
+    p.add_argument(
+        "--rate-limit-report",
+        action="store_true",
+        default=cfg.get("rate_limit_report", False),
+        help="After the report, show a summary of domains that rate-limited (HTTP 429) the checker",
+    )
     p.add_argument("--version", action="version", version=f"linkrot {__version__}")
     return p
 
@@ -438,6 +456,12 @@ def _one_pass_rich(
             highlight=False,
         )
 
+    if args.ci_summary:
+        from . import ci
+        written = ci.write_github_step_summary(results, root, scan_elapsed, check_elapsed)
+        if written:
+            console.print("[dim]CI: GitHub Actions step summary written.[/dim]", highlight=False)
+
     if args.show_redirects:
         console.print()
         _print_redirects(console, results)
@@ -489,6 +513,45 @@ def _one_pass_rich(
         from .reporter import report_impact_summary
         console.print()
         report_impact_summary(results, root, console=console)
+
+    if args.priority_sort:
+        from .priority import rank_broken_by_priority
+        from rich.table import Table as _Table, box as _rbox
+        ranked = rank_broken_by_priority(results)
+        if ranked:
+            console.print()
+            pt = _Table(
+                box=_rbox.ROUNDED,
+                show_header=True,
+                header_style="bold cyan",
+                border_style="cyan",
+                title="[bold]Priority Fix Queue[/bold]",
+            )
+            pt.add_column("Priority Score", justify="right", style="bold yellow")
+            pt.add_column("Status", style="dim", no_wrap=True)
+            pt.add_column("URL", no_wrap=False)
+            pt.add_column("Impact (files)", justify="right")
+            pt.add_column("Detail", style="dim", no_wrap=False)
+            from collections import defaultdict as _dd
+            url_files: dict = _dd(set)
+            for r in results:
+                if not r.ok:
+                    url_files[r.link.url].add(str(r.link.source_file))
+            for result, score in ranked:
+                impact = len(url_files[result.link.url])
+                pt.add_row(
+                    str(score),
+                    result.status,
+                    result.link.url,
+                    str(impact),
+                    result.detail or "",
+                )
+            console.print(pt)
+
+    if args.rate_limit_report:
+        from .reporter import report_rate_limit_summary
+        console.print()
+        report_rate_limit_summary(results, root, console=console)
 
     if args.triage:
         from .triage import triage_broken_links
@@ -675,6 +738,12 @@ def _run_plain(args: argparse.Namespace, roots: list[Path]) -> int:
         if is_tty:
             print(f"Baseline saved to {args.save_baseline}")
 
+    if args.ci_summary:
+        from . import ci
+        written = ci.write_github_step_summary(results, root, scan_elapsed, check_elapsed)
+        if written and is_tty:
+            print("CI: GitHub Actions step summary written.")
+
     if args.domain_summary:
         from .reporter import report_domain_summary
         report_domain_summary(results, console=None)
@@ -717,6 +786,25 @@ def _run_plain(args: argparse.Namespace, roots: list[Path]) -> int:
     if args.impact_report:
         from .reporter import report_impact_summary
         report_impact_summary(results, root, console=None)
+
+    if args.priority_sort:
+        from .priority import rank_broken_by_priority
+        ranked = rank_broken_by_priority(results)
+        if ranked:
+            from collections import defaultdict as _dd
+            url_files: dict = _dd(set)
+            for r in results:
+                if not r.ok:
+                    url_files[r.link.url].add(str(r.link.source_file))
+            print("\n--- Priority Fix Queue ---")
+            print(f"{'Score':>6}  {'Status':<14}  {'Impact':>7}  {'URL'}")
+            for result, score in ranked:
+                impact = len(url_files[result.link.url])
+                print(f"{score:>6}  {result.status:<14}  {impact:>7}  {result.link.url}")
+
+    if args.rate_limit_report:
+        from .reporter import report_rate_limit_summary
+        report_rate_limit_summary(results, root, console=None)
 
     if args.triage:
         from .triage import triage_broken_links
