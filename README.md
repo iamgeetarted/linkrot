@@ -4,6 +4,73 @@
 
 ---
 
+## What's New in v2.2.0
+
+### Fragment Validation (`--validate-fragments`)
+
+Check that internal `#anchor` links actually resolve to a heading or `id=` attribute in the target file. Catches dead section links that HTTP checkers miss entirely.
+
+```bash
+linkrot . --validate-fragments
+```
+
+```
+╭─ Broken Fragment Links ──────────────────────────────────────────────────────╮
+│  File                Line  Fragment         Reason                          │
+│  docs/setup.md          42  #advanced-config  #advanced-config not found     │
+│  README.md              18  #installation     #installation not found        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+2 broken fragment(s) found, 14 OK.
+```
+
+Anchors are derived from GitHub-style heading normalisation (lowercase, spaces→hyphens, strip punctuation). Also respects explicit `{#id}` syntax (Pandoc/kramdown) and HTML `id=` attributes.
+
+---
+
+### Link Text Accessibility (`--accessibility`)
+
+Flag non-descriptive anchor text — `"here"`, `"click"`, `"read more"`, empty links — that hurt screen readers and SEO.
+
+```bash
+linkrot . --accessibility
+```
+
+```
+╭─ Accessibility: Non-descriptive Link Text ──────────────────────────────────╮
+│  File           Line  Text         Issue                                    │
+│  README.md        31  here         non-descriptive link text: "here"        │
+│  docs/guide.md    88  click here   non-descriptive link text: "click here"  │
+│  index.html       14  (empty)      empty link text                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+3 accessibility issue(s) found.
+```
+
+Checks 25+ known non-descriptive phrases. Works on Markdown and HTML.
+
+---
+
+### Link Graph Export (`--link-graph FILE`)
+
+Export the internal file-to-file link dependency graph as JSON, Markdown, or a live Rich table. Useful for understanding documentation structure or detecting orphaned files.
+
+```bash
+linkrot . --link-graph graph.json      # JSON adjacency list
+linkrot . --link-graph graph.md        # Markdown with inbound/outbound sections
+linkrot . --link-graph -               # Rich table to terminal
+```
+
+```json
+{
+  "README.md": ["docs/setup.md", "docs/usage.md"],
+  "docs/setup.md": ["docs/advanced.md"],
+  "docs/usage.md": ["docs/api.md", "docs/examples.md"]
+}
+```
+
+The Markdown output also includes a reverse index (inbound links per file), making it easy to find orphaned pages.
+
+---
+
 ## What's New in v2.1.0
 
 ### Priority Fix Queue (`--priority-sort`)

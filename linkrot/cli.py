@@ -258,6 +258,33 @@ examples:
         default=cfg.get("rate_limit_report", False),
         help="After the report, show a summary of domains that rate-limited (HTTP 429) the checker",
     )
+    p.add_argument(
+        "--validate-fragments",
+        action="store_true",
+        default=cfg.get("validate_fragments", False),
+        help=(
+            "After the link check, validate that internal #anchor fragments actually exist "
+            "in the target file (checks heading IDs and explicit id= attributes)"
+        ),
+    )
+    p.add_argument(
+        "--accessibility",
+        action="store_true",
+        default=cfg.get("accessibility", False),
+        help=(
+            "After the report, scan for non-descriptive link text such as 'here', "
+            "'click', 'read more', or empty anchor text"
+        ),
+    )
+    p.add_argument(
+        "--link-graph",
+        metavar="FILE",
+        default=cfg.get("link_graph", None),
+        help=(
+            "After the report, export the internal file-to-file link dependency graph "
+            "to FILE (.json for JSON, .md for Markdown, - for Rich console output)"
+        ),
+    )
     p.add_argument("--version", action="version", version=f"linkrot {__version__}")
     return p
 
@@ -567,6 +594,87 @@ def _one_pass_rich(
         from .fixer import interactive_fix
         interactive_fix(results, root)
 
+    if args.validate_fragments:
+        from .fragments import validate_fragments
+        all_links = [r.link for r in results]
+        frag_results = validate_fragments(all_links, root)
+        broken_frags = [f for f in frag_results if not f['valid']]
+        if broken_frags:
+            from rich.table import Table as _Table, box as _rbox
+            ft = _Table(
+                box=_rbox.ROUNDED,
+                show_header=True,
+                header_style='bold red',
+                border_style='red',
+                title='[bold]Broken Fragment Links[/bold]',
+            )
+            ft.add_column('File', style='cyan')
+            ft.add_column('Line', justify='right', style='dim', width=5)
+            ft.add_column('Fragment', style='yellow')
+            ft.add_column('Reason', style='red')
+            for f in broken_frags:
+                try:
+                    rel = str(f['link'].source_file.relative_to(root))
+                except ValueError:
+                    rel = str(f['link'].source_file)
+                ft.add_row(rel, str(f['link'].line_number), f'#{f["anchor"]}', f['reason'])
+            console.print()
+            console.print(ft)
+            console.print(
+                f'[dim]{len(broken_frags)} broken fragment(s) found, '
+                f'{len(frag_results) - len(broken_frags)} OK.[/dim]'
+            )
+        else:
+            valid_count = len(frag_results)
+            console.print(
+                f'[green]✓ All {valid_count} internal anchor fragment(s) are valid.[/green]'
+                if valid_count else '[dim]No internal anchor fragments to validate.[/dim]'
+            )
+
+    if args.accessibility:
+        from .accessibility import scan_accessibility
+        a11y_issues = scan_accessibility(roots)
+        if a11y_issues:
+            from rich.table import Table as _Table, box as _rbox
+            at = _Table(
+                box=_rbox.ROUNDED,
+                show_header=True,
+                header_style='bold yellow',
+                border_style='yellow',
+                title='[bold]Accessibility: Non-descriptive Link Text[/bold]',
+            )
+            at.add_column('File', style='cyan')
+            at.add_column('Line', justify='right', style='dim', width=5)
+            at.add_column('Text', style='yellow')
+            at.add_column('Issue', style='dim')
+            for issue in a11y_issues:
+                try:
+                    rel = str(issue['file'].relative_to(root))
+                except ValueError:
+                    rel = str(issue['file'])
+                at.add_row(rel, str(issue['line']), issue['text'], issue['issue'])
+            console.print()
+            console.print(at)
+            console.print(f'[dim]{len(a11y_issues)} accessibility issue(s) found.[/dim]')
+        else:
+            console.print('[green]✓ No accessibility issues found in link text.[/green]')
+
+    if args.link_graph:
+        from .linkgraph import build_graph, export_json, export_markdown, print_graph_rich
+        all_links = [r.link for r in results]
+        graph = build_graph(all_links, root)
+        dest = args.link_graph
+        if dest == '-':
+            print_graph_rich(graph, console)
+        elif dest.endswith('.json'):
+            import pathlib
+            pathlib.Path(dest).write_text(export_json(graph))
+            console.print(f'[dim]Link graph saved to {dest} ({len(graph)} source files)[/dim]')
+        else:
+            import pathlib
+            pathlib.Path(dest).write_text(export_markdown(graph, root))
+            console.print(f'[dim]Link graph saved to {dest} ({len(graph)} source files)[/dim]')
+
     return exit_code, results, scan_elapsed, check_elapsed
 
 
@@ -820,6 +928,56 @@ def _run_plain(args: argparse.Namespace, roots: list[Path]) -> int:
     if args.fix:
         from .fixer import interactive_fix
         interactive_fix(results, root)
+
+    if args.validate_fragments:
+        from .fragments import validate_fragments
+        all_links = [r.link for r in results]
+        frag_results = validate_fragments(all_links, root)
+        broken_frags = [f for f in frag_results if not f['valid']]
+        if broken_frags:
+            print('\n--- Broken Fragment Links ---')
+            for f in broken_frags:
+                try:
+                    rel = str(f['link'].source_file.relative_to(root))
+                except ValueError:
+                    rel = str(f['link'].source_file)
+                print(f"  {rel}:{f['link'].line_number} #{f['anchor']} — {f['reason']}")
+            print(f"{len(broken_frags)} broken fragment(s) found.")
+        elif is_tty:
+            print(f"All {len(frag_results)} internal anchor fragment(s) are valid.")
+
+    if args.accessibility:
+        from .accessibility import scan_accessibility
+        a11y_issues = scan_accessibility(roots)
+        if a11y_issues:
+            print('\n--- Non-descriptive Link Text ---')
+            for issue in a11y_issues:
+                try:
+                    rel = str(issue['file'].relative_to(root))
+                except ValueError:
+                    rel = str(issue['file'])
+                print(f"  {rel}:{issue['line']} [{issue['text']}] — {issue['issue']}")
+            print(f"{len(a11y_issues)} accessibility issue(s) found.")
+        elif is_tty:
+            print('No accessibility issues in link text.')
+
+    if args.link_graph:
+        from .linkgraph import build_graph, export_json, export_markdown
+        all_links = [r.link for r in results]
+        graph = build_graph(all_links, root)
+        dest = args.link_graph
+        if dest == '-':
+            print(export_json(graph))
+        elif dest.endswith('.json'):
+            import pathlib
+            pathlib.Path(dest).write_text(export_json(graph))
+            if is_tty:
+                print(f'Link graph saved to {dest}')
+        else:
+            import pathlib
+            pathlib.Path(dest).write_text(export_markdown(graph, root))
+            if is_tty:
+                print(f'Link graph saved to {dest}')
 
     return exit_code
 
