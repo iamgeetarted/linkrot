@@ -4,6 +4,78 @@
 
 ---
 
+## What's New in v2.3.0
+
+### Link Health Score (`--score`, `--score-min`)
+
+Compute a 0–100 health score with letter grade (A+→F) after every scan. Combine with `--score-min` to fail CI builds when quality slips below a threshold.
+
+```bash
+linkrot docs/ --score
+linkrot docs/ --score --score-min 90   # exit 2 if score < 90
+```
+
+```
+╭─ Link Health Score ──────────────────────────────────────╮
+│  Links checked   1 042                                   │
+│  Passing         1 031                                   │
+│  Broken             11                                   │
+│  Pass rate        98.9%                                  │
+│  Health score     98.7  A+                               │
+╰──────────────────────────────────────────────────────────╯
+```
+
+The score penalises HTTP 5xx errors and timeouts more heavily than 4xx, giving an accurate signal for CI gating.
+
+---
+
+### Graphviz DOT Graph Export
+
+`--link-graph` now accepts `.dot` files in addition to `.json` and `.md`. Pipe the output to `dot -Tsvg` to generate visual dependency diagrams.
+
+```bash
+linkrot docs/ --link-graph deps.dot
+dot -Tsvg deps.dot -o deps.svg
+xdg-open deps.svg
+```
+
+The DOT file is a directed graph where each node is a file and each edge is an internal hyperlink.
+
+---
+
+### AI Health Report (`--ai-health-report`)
+
+A strategic, whole-scan AI report powered by `claude-sonnet-4-6`. Unlike `--triage` (per-link suggestions) this analyses patterns, root causes, and gives prevention recommendations.
+
+```bash
+linkrot docs/ --ai-health-report
+```
+
+```
+─────────────── AI Health Report ───────────────
+
+## Executive Summary
+98% of 1 042 links pass. The 11 broken links cluster around two domains
+that migrated to new URL schemes in 2025 — not systemic rot.
+
+## Root Cause Analysis
+• docs.example.com changed /v1/ paths to /latest/ in Jan 2025 (8 links)
+• python.org reorganised the stdlib reference URLs (3 links)
+
+## Priority Actions
+1. Replace all docs.example.com/v1/ → docs.example.com/latest/ (regex replace)
+2. Update the 3 Python stdlib links to docs.python.org/3/library/…
+3. Add --domain-concurrency 1 for docs.example.com to avoid rate limiting
+
+## Prevention Recommendations
+• Add linkrot to CI with --score-min 95 to catch regressions early
+• Pin external link domains in a CODEOWNERS-style allow-list
+```
+
+Requires `ANTHROPIC_API_KEY`.
+
+---
+
 ## What's New in v2.2.0
 
 ### Fragment Validation (`--validate-fragments`)

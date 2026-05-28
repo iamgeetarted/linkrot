@@ -77,6 +77,22 @@ def export_markdown(graph: dict[str, list[str]], root: Path | None = None) -> st
     return '\n'.join(lines)
 
 
+def export_dot(graph: dict[str, list[str]]) -> str:
+    """Serialize the graph as a Graphviz DOT digraph."""
+    import re
+
+    def _id(path: str) -> str:
+        # Replace non-word chars with underscores for valid DOT identifiers
+        return '"' + path.replace('"', '\\"') + '"'
+
+    lines = ['digraph linkgraph {', '  rankdir=LR;', '  node [shape=box fontname="Courier" fontsize=10];']
+    for src, targets in sorted(graph.items()):
+        for tgt in sorted(targets):
+            lines.append(f'  {_id(src)} -> {_id(tgt)};')
+    lines.append('}')
+    return '\n'.join(lines)
+
+
 def print_graph_rich(graph: dict[str, list[str]], console: object) -> None:
     """Pretty-print the graph to a Rich console."""
     from rich.table import Table, box as rbox

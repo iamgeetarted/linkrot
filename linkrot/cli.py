@@ -282,7 +282,32 @@ examples:
         default=cfg.get("link_graph", None),
         help=(
             "After the report, export the internal file-to-file link dependency graph "
-            "to FILE (.json for JSON, .md for Markdown, - for Rich console output)"
+            "to FILE (.json for JSON, .md for Markdown, .dot for Graphviz, - for Rich console output)"
+        ),
+    )
+    p.add_argument(
+        "--score",
+        action="store_true",
+        default=cfg.get("score", False),
+        help=(
+            "After the report, display a 0–100 health score with letter grade "
+            "suitable for CI gating (exits 2 if score < --score-min)"
+        ),
+    )
+    p.add_argument(
+        "--score-min",
+        type=float,
+        default=cfg.get("score_min", 0.0),
+        metavar="N",
+        help="Fail with exit code 2 when the health score drops below N (use with --score)",
+    )
+    p.add_argument(
+        "--ai-health-report",
+        action="store_true",
+        default=cfg.get("ai_health_report", False),
+        help=(
+            "Stream a strategic AI health report (root causes, priority actions, prevention) "
+            "using claude-sonnet-4-6. Requires ANTHROPIC_API_KEY."
         ),
     )
     p.add_argument("--version", action="version", version=f"linkrot {__version__}")
@@ -660,7 +685,7 @@ def _one_pass_rich(
             console.print('[green]✓ No accessibility issues found in link text.[/green]')
 
     if args.link_graph:
-        from .linkgraph import build_graph, export_json, export_markdown, print_graph_rich
+        from .linkgraph import build_graph, export_json, export_markdown, export_dot, print_graph_rich
         all_links = [r.link for r in results]
         graph = build_graph(all_links, root)
         dest = args.link_graph
@@ -670,10 +695,23 @@ def _one_pass_rich(
             import pathlib
             pathlib.Path(dest).write_text(export_json(graph))
             console.print(f'[dim]Link graph saved to {dest} ({len(graph)} source files)[/dim]')
+        elif dest.endswith('.dot'):
+            import pathlib
+            pathlib.Path(dest).write_text(export_dot(graph))
+            console.print(f'[dim]Link graph (DOT) saved to {dest} ({len(graph)} source files)[/dim]')
         else:
             import pathlib
             pathlib.Path(dest).write_text(export_markdown(graph, root))
             console.print(f'[dim]Link graph saved to {dest} ({len(graph)} source files)[/dim]')
+
+    if args.score:
+        from .score import print_score
+        console.print()
+        print_score(results, console=console)
+
+    if args.ai_health_report:
+        from .healthreport import ai_health_report
+        ai_health_report(results, root)
 
     return exit_code, results, scan_elapsed, check_elapsed
 
@@ -726,7 +764,15 @@ def _run_with_rich(args: argparse.Namespace, roots: list[Path]) -> int:
             iteration += 1
         return 0
 
-    exit_code, _, _, _ = _one_pass_rich(args, roots, console, prev_broken=None)
+    exit_code, results, _, _ = _one_pass_rich(args, roots, console, prev_broken=None)
+    if args.score and args.score_min > 0:
+        from .score import compute_score
+        info = compute_score(results)
+        if info["score"] < args.score_min:
+            console.print(
+                f"[bold red]Health score {info['score']} < minimum {args.score_min} — failing.[/bold red]"
+            )
+            return 2
     return exit_code
 
 
@@ -962,7 +1008,7 @@ def _run_plain(args: argparse.Namespace, roots: list[Path]) -> int:
             print('No accessibility issues in link text.')
 
     if args.link_graph:
-        from .linkgraph import build_graph, export_json, export_markdown
+        from .linkgraph import build_graph, export_json, export_markdown, export_dot
         all_links = [r.link for r in results]
         graph = build_graph(all_links, root)
         dest = args.link_graph
@@ -973,11 +1019,24 @@ def _run_plain(args: argparse.Namespace, roots: list[Path]) -> int:
             pathlib.Path(dest).write_text(export_json(graph))
             if is_tty:
                 print(f'Link graph saved to {dest}')
+        elif dest.endswith('.dot'):
+            import pathlib
+            pathlib.Path(dest).write_text(export_dot(graph))
+            if is_tty:
+                print(f'Link graph (DOT) saved to {dest}')
         else:
             import pathlib
             pathlib.Path(dest).write_text(export_markdown(graph, root))
             if is_tty:
                 print(f'Link graph saved to {dest}')
+
+    if args.score:
+        from .score import print_score
+        print_score(results, console=None)
+
+    if args.ai_health_report:
+        from .healthreport import ai_health_report
+        ai_health_report(results, root)
 
     return exit_code
 
