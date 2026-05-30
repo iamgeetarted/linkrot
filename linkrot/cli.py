@@ -311,6 +311,41 @@ examples:
         ),
     )
     p.add_argument("--version", action="version", version=f"linkrot {__version__}")
+
+    p.add_argument(
+        "--allow-domain",
+        action="append",
+        dest="allow_domains",
+        metavar="DOMAIN",
+        default=list(cfg.get("allow_domains", [])),
+        help=(
+            "Skip all external links whose host matches DOMAIN (can repeat). "
+            "Useful for internal hostnames reachable only on your network. "
+            "Example: --allow-domain staging.internal --allow-domain localhost"
+        ),
+    )
+    p.add_argument(
+        "--max-broken",
+        type=int,
+        default=cfg.get("max_broken", 0),
+        metavar="N",
+        help=(
+            "Exit with code 2 when the absolute count of broken links exceeds N. "
+            "Complements --score-min for strict CI gating. 0 = disabled (default)."
+        ),
+    )
+    p.add_argument(
+        "--badge",
+        metavar="FILE",
+        default=None,
+        nargs="?",
+        const="-",
+        help=(
+            "After the scan, write a Markdown health-badge snippet to FILE "
+            "(use '-' or omit the path to print to stdout). "
+            "Example: --badge >> README.md"
+        ),
+    )
     return p
 
 
@@ -428,6 +463,28 @@ def _one_pass_rich(
             scan.links.extend(sitemap_links)
             console.print(
                 f"[dim]Sitemap: added {len(sitemap_links)} URL(s) from sitemap files.[/dim]",
+                highlight=False,
+            )
+
+    # Filter out links whose domain appears in --allow-domain
+    allow_domains: list[str] = getattr(args, "allow_domains", []) or []
+    if allow_domains:
+        def _domain_allowed(url: str) -> bool:
+            try:
+                from urllib.parse import urlparse
+                host = urlparse(url).hostname or ""
+                return any(
+                    host == d or host.endswith("." + d)
+                    for d in allow_domains
+                )
+            except Exception:
+                return False
+        before_count = len(scan.links)
+        scan.links = [lnk for lnk in scan.links if not (lnk.is_external and _domain_allowed(lnk.url))]
+        skipped = before_count - len(scan.links)
+        if skipped:
+            console.print(
+                f"[dim]--allow-domain: skipped {skipped} link(s) from allowed domain(s).[/dim]",
                 highlight=False,
             )
 
@@ -713,6 +770,25 @@ def _one_pass_rich(
         from .healthreport import ai_health_report
         ai_health_report(results, root)
 
+    if getattr(args, "badge", None):
+        from .reporter import generate_badge_markdown
+        badge_md = generate_badge_markdown(results)
+        dest = args.badge
+        if dest == "-":
+            console.print(badge_md)
+        else:
+            from pathlib import Path as _Path
+            _Path(dest).write_text(badge_md + "\n", encoding="utf-8")
+            console.print(f"[dim]Badge written to {dest}[/dim]", highlight=False)
+
+    broken_count_final = sum(1 for r in results if not r.ok)
+    max_broken = getattr(args, "max_broken", 0)
+    if max_broken > 0 and broken_count_final > max_broken:
+        console.print(
+            f"[bold red]Broken link count {broken_count_final} exceeds --max-broken {max_broken} — failing.[/bold red]"
+        )
+        return 2, results, scan_elapsed, check_elapsed
+
     return exit_code, results, scan_elapsed, check_elapsed
 
 
@@ -832,6 +908,25 @@ def _run_plain(args: argparse.Namespace, roots: list[Path]) -> int:
             scan.links.extend(sitemap_links)
             if is_tty:
                 print(f"Sitemap: added {len(sitemap_links)} URL(s) from sitemap files.")
+
+    # Filter out links whose domain appears in --allow-domain
+    allow_domains_plain: list[str] = getattr(args, "allow_domains", []) or []
+    if allow_domains_plain:
+        def _domain_ok(url: str) -> bool:
+            try:
+                from urllib.parse import urlparse
+                host = urlparse(url).hostname or ""
+                return any(
+                    host == d or host.endswith("." + d)
+                    for d in allow_domains_plain
+                )
+            except Exception:
+                return False
+        before_n = len(scan.links)
+        scan.links = [lnk for lnk in scan.links if not (lnk.is_external and _domain_ok(lnk.url))]
+        skipped_n = before_n - len(scan.links)
+        if skipped_n and is_tty:
+            print(f"--allow-domain: skipped {skipped_n} link(s) from allowed domain(s).")
 
     if is_tty:
         print(f"Found {len(scan.links)} links in {scan.files_scanned} files.")
@@ -1037,6 +1132,27 @@ def _run_plain(args: argparse.Namespace, roots: list[Path]) -> int:
     if args.ai_health_report:
         from .healthreport import ai_health_report
         ai_health_report(results, root)
+
+    if getattr(args, "badge", None):
+        from .reporter import generate_badge_markdown
+        badge_md = generate_badge_markdown(results)
+        dest = args.badge
+        if dest == "-":
+            print(badge_md)
+        else:
+            from pathlib import Path as _Path
+            _Path(dest).write_text(badge_md + "\n", encoding="utf-8")
+            if is_tty:
+                print(f"Badge written to {dest}")
+
+    max_broken_plain = getattr(args, "max_broken", 0)
+    broken_final = sum(1 for r in results if not r.ok)
+    if max_broken_plain > 0 and broken_final > max_broken_plain:
+        print(
+            f"linkrot: broken link count {broken_final} exceeds --max-broken {max_broken_plain} — failing.",
+            file=sys.stderr,
+        )
+        return 2
 
     return exit_code
 

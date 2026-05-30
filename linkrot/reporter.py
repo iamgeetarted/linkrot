@@ -919,3 +919,42 @@ def write_report(
 
     broken_count = sum(1 for r in results if not r.ok)
     return 1 if broken_count else 0
+
+
+def generate_badge_markdown(results: list[CheckResult]) -> str:
+    """Return a shields.io Markdown badge reflecting the scan's link health.
+
+    The badge encodes the pass-rate and uses colour thresholds:
+      ≥ 99% → brightgreen  ≥ 95% → green  ≥ 90% → yellowgreen
+      ≥ 80% → yellow  ≥ 70% → orange  < 70% → red
+    """
+    from urllib.parse import quote
+
+    total = len(results)
+    if total == 0:
+        label = "no links"
+        colour = "lightgrey"
+        badge_text = "no links"
+    else:
+        broken = sum(1 for r in results if not r.ok)
+        passing = total - broken
+        pct = passing / total * 100
+
+        if pct >= 99:
+            colour = "brightgreen"
+        elif pct >= 95:
+            colour = "green"
+        elif pct >= 90:
+            colour = "yellowgreen"
+        elif pct >= 80:
+            colour = "yellow"
+        elif pct >= 70:
+            colour = "orange"
+        else:
+            colour = "red"
+
+        badge_text = f"{passing} passing" if broken == 0 else f"{broken} broken"
+
+    encoded = quote(badge_text, safe="")
+    url = f"https://img.shields.io/badge/links-{encoded}-{colour}"
+    return f"[![Link Health]({url})](https://github.com/iamgeetarted/linkrot)"

@@ -4,6 +4,67 @@
 
 ---
 
+## What's New in v2.4.0
+
+### `--allow-domain DOMAIN` — Domain-level skip list
+
+Skip all external links from specific hostnames — perfect for staging environments, internal servers, or CI jobs that can't reach certain networks. Subdomains are matched automatically.
+
+```bash
+linkrot docs/ --allow-domain staging.internal --allow-domain localhost
+linkrot docs/ --allow-domain example-corp.net   # skips all *.example-corp.net too
+```
+
+Persist allowed domains in `.linkrot.toml`:
+```toml
+allow_domains = ["staging.internal", "localhost"]
+```
+
+```
+--allow-domain: skipped 14 link(s) from allowed domain(s).
+Found 812 links in 43 files.
+```
+
+---
+
+### `--max-broken N` — Absolute broken-count CI gate
+
+Fail the process (exit 2) when the raw count of broken links exceeds N. Complements `--score-min` (percentage-based) for projects with strict zero-tolerance policies or hard budgets.
+
+```bash
+linkrot docs/ --max-broken 0    # fail on any broken link
+linkrot docs/ --max-broken 5    # allow up to 5 known breakages
+```
+
+Works alongside `--score-min`:
+```bash
+linkrot docs/ --score --score-min 95 --max-broken 10
+# fails if score < 95 OR more than 10 links are broken
+```
+
+---
+
+### `--badge [FILE]` — Health badge for your README
+
+Generate a shields.io Markdown badge showing the current link health. Pipe it to a file or add it to your README automatically.
+
+```bash
+linkrot docs/ --badge              # print badge markdown to stdout
+linkrot docs/ --badge badge.md     # write to file
+```
+
+Sample output:
+
+```markdown
+[![Link Health](https://img.shields.io/badge/links-1031%20passing-brightgreen)](https://github.com/iamgeetarted/linkrot)
+```
+
+Colour thresholds: `brightgreen` ≥99% · `green` ≥95% · `yellowgreen` ≥90% · `yellow` ≥80% · `orange` ≥70% · `red` <70%.
+
+---
+
+## What's New in v2.3.0
+
 ## What's New in v2.3.0
 
 ### Link Health Score (`--score`, `--score-min`)
